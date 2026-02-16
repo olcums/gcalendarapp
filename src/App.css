@@ -27,6 +27,23 @@ h1 {
   margin: 0 0 1rem;
 }
 
+.app-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0 0.35rem;
+  line-height: 0;
+}
+
+.title-logo {
+  display: block;
+  max-width: min(980px, 100%);
+  width: 100%;
+  height: auto;
+  max-height: 180px;
+  object-fit: contain;
+}
+
 .card {
   background: #ffffff;
   border: 1px solid #d8e3f6;

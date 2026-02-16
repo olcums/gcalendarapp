@@ -615,7 +615,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <h1>G-Calendar</h1>
+      <h1 className="app-title"><img src="/titlelogo.png" alt="G-Calendar" className="title-logo" /></h1>
 
       {isRestoringSession ? (
         <section className="card">
