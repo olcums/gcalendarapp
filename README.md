@@ -32,6 +32,7 @@ npm run tauri dev
 ## What it does
 
 - Signs in with Google OAuth (desktop-safe external browser flow).
-- Requests read-only Calendar scope.
-- Syncs and shows upcoming events from your primary calendar.
-- Stores refresh token securely in OS credential storage and restores session automatically on app startup.
+- Supports multiple Google accounts in one view.
+- Uses distinct colors per account for month/day events.
+- Lets you create events to the selected account calendar.
+- Stores refresh tokens securely in OS credential storage and restores sessions automatically on app startup.

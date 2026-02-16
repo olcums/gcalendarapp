@@ -53,6 +53,54 @@ h1 {
   text-align: center;
 }
 
+.account-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid #d8e3f6;
+  background: #f7faff;
+  border-radius: 999px;
+  padding: 0.3rem 0.45rem 0.3rem 0.35rem;
+  cursor: pointer;
+}
+
+.account-chip.active {
+  border-color: #2f6fe7;
+  box-shadow: inset 0 0 0 1px #2f6fe7;
+}
+
+.account-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.account-email {
+  font-size: 0.84rem;
+}
+
+.chip-remove {
+  border: 1px solid #d6dfef;
+  background: #ffffff;
+  color: #26405f;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.chip-remove:hover {
+  background: #eff4fd;
+}
+
 button {
   border: 1px solid #2f6fe7;
   border-radius: 10px;
@@ -221,6 +269,7 @@ button.secondary {
 }
 
 .event-form input,
+.event-form select,
 .event-form textarea {
   width: 100%;
   border: 1px solid #ced9ec;
@@ -257,6 +306,7 @@ button.secondary {
 
 .detail-event-item {
   border: 1px solid #e2ebfa;
+  border-left: 4px solid #2f6fe7;
   border-radius: 8px;
   padding: 0.6rem;
   background: #f9fbff;
@@ -268,6 +318,14 @@ button.secondary {
 
 .detail-event-item p {
   margin: 0.25rem 0;
+}
+
+.detail-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #5b6b86;
+  font-size: 0.8rem;
 }
 
 .detail-event-item a {

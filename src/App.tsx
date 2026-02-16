@@ -2,11 +2,24 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
+type GoogleSession = {
+  email: string;
+  access_token: string;
+};
+
+type ConnectedAccount = {
+  email: string;
+  accessToken: string;
+  color: string;
+};
+
 type CalendarEvent = {
   id: string;
   summary?: string;
   location?: string;
   htmlLink?: string;
+  sourceEmail: string;
+  sourceColor: string;
   start?: {
     date?: string;
     dateTime?: string;
@@ -30,6 +43,25 @@ type NewEventForm = {
   location: string;
   description: string;
 };
+
+const ACCOUNT_COLORS = [
+  "#2f6fe7",
+  "#d94841",
+  "#2a9d8f",
+  "#f59e0b",
+  "#7c3aed",
+  "#0f766e",
+  "#ef4444",
+  "#1d4ed8",
+];
+
+function colorForEmail(email: string): string {
+  let hash = 0;
+  for (let i = 0; i < email.length; i += 1) {
+    hash = (hash * 31 + email.charCodeAt(i)) % 2147483647;
+  }
+  return ACCOUNT_COLORS[Math.abs(hash) % ACCOUNT_COLORS.length];
+}
 
 function getMonthStart(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -101,12 +133,31 @@ function buildMonthGrid(monthStart: Date): MonthCell[] {
   });
 }
 
+function normalizeAccount(session: GoogleSession): ConnectedAccount {
+  return {
+    email: session.email,
+    accessToken: session.access_token,
+    color: colorForEmail(session.email),
+  };
+}
+
+function eventStartMs(event: CalendarEvent): number {
+  if (event.start?.dateTime) {
+    return new Date(event.start.dateTime).getTime();
+  }
+  if (event.start?.date) {
+    return parseDayKey(event.start.date).getTime();
+  }
+  return Number.MAX_SAFE_INTEGER;
+}
+
 export default function App() {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
   const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
   const redirectUri = import.meta.env.VITE_GOOGLE_REDIRECT_URI;
 
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
+  const [activeAccountEmail, setActiveAccountEmail] = useState<string>("");
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -126,14 +177,18 @@ export default function App() {
     description: "",
   });
 
-  const fetchEvents = useCallback(async (token: string, monthStart: Date) => {
+  const fetchEvents = useCallback(async (accountsToLoad: ConnectedAccount[], monthStart: Date) => {
+    if (accountsToLoad.length === 0) {
+      setEvents([]);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
     try {
       const rangeStart = new Date(monthStart.getFullYear(), monthStart.getMonth(), 1);
       const rangeEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
-
       const params = new URLSearchParams({
         maxResults: "2500",
         orderBy: "startTime",
@@ -142,25 +197,54 @@ export default function App() {
         timeMax: rangeEnd.toISOString(),
       });
 
-      const response = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
+      const settled = await Promise.allSettled(
+        accountsToLoad.map(async (account) => {
+          const response = await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`,
+            {
+              headers: {
+                Authorization: `Bearer ${account.accessToken}`,
+              },
+            }
+          );
+
+          if (!response.ok) {
+            const payload = await response.json().catch(() => null);
+            const message = payload?.error?.message ?? "Failed to fetch events.";
+            throw new Error(`${account.email}: ${message}`);
+          }
+
+          const payload = (await response.json()) as {
+            items?: Array<Omit<CalendarEvent, "sourceEmail" | "sourceColor">>;
+          };
+
+          return (payload.items ?? []).map((event) => ({
+            ...event,
+            sourceEmail: account.email,
+            sourceColor: account.color,
+          }));
+        })
       );
 
-      if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        const message = payload?.error?.message ?? "Failed to fetch events from Google Calendar.";
-        throw new Error(message);
+      const merged: CalendarEvent[] = [];
+      const errors: string[] = [];
+
+      for (const result of settled) {
+        if (result.status === "fulfilled") {
+          merged.push(...result.value);
+        } else {
+          errors.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+        }
       }
 
-      const payload = (await response.json()) as { items?: CalendarEvent[] };
-      setEvents(payload.items ?? []);
+      merged.sort((a, b) => eventStartMs(a) - eventStartMs(b));
+      setEvents(merged);
+
+      if (errors.length > 0) {
+        setError(`Some accounts failed to sync: ${errors.join(" | ")}`);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unexpected error");
+      setError(err instanceof Error ? err.message : "Unexpected sync error");
       setEvents([]);
     } finally {
       setIsLoading(false);
@@ -174,24 +258,28 @@ export default function App() {
     }
 
     let alive = true;
-    const restoreSession = async () => {
+    const restoreSessions = async () => {
       try {
-        const token = await invoke<{ access_token: string }>("restore_google_session", {
+        const restored = await invoke<GoogleSession[]>("restore_google_sessions", {
           clientId,
           clientSecret: clientSecret || null,
         });
-        if (alive) {
-          setAccessToken(token.access_token);
-          setError(null);
+
+        if (!alive) {
+          return;
+        }
+
+        const normalized = restored.map(normalizeAccount);
+        setAccounts(normalized);
+        if (normalized.length > 0) {
+          setActiveAccountEmail(normalized[0].email);
         }
       } catch (err) {
         if (!alive) {
           return;
         }
         const message = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
-        if (!message.includes("No saved Google session")) {
-          setError(message);
-        }
+        setError(message);
       } finally {
         if (alive) {
           setIsRestoringSession(false);
@@ -199,23 +287,33 @@ export default function App() {
       }
     };
 
-    void restoreSession();
-
+    void restoreSessions();
     return () => {
       alive = false;
     };
   }, [clientId, clientSecret]);
 
   useEffect(() => {
-    if (!accessToken) {
+    if (accounts.length === 0) {
       setEvents([]);
       return;
     }
 
-    void fetchEvents(accessToken, currentMonth);
-  }, [accessToken, currentMonth, fetchEvents]);
+    void fetchEvents(accounts, currentMonth);
+  }, [accounts, currentMonth, fetchEvents]);
 
-  const connectGoogleCalendar = async () => {
+  useEffect(() => {
+    if (accounts.length === 0) {
+      setActiveAccountEmail("");
+      return;
+    }
+
+    if (!accounts.some((account) => account.email === activeAccountEmail)) {
+      setActiveAccountEmail(accounts[0].email);
+    }
+  }, [accounts, activeAccountEmail]);
+
+  const connectGoogleAccount = async () => {
     if (!clientId) {
       setError("Missing VITE_GOOGLE_CLIENT_ID in .env");
       return;
@@ -225,12 +323,25 @@ export default function App() {
     setError(null);
 
     try {
-      const token = await invoke<{ access_token: string }>("login_with_google", {
+      const session = await invoke<GoogleSession>("login_with_google", {
         clientId,
         clientSecret: clientSecret || null,
         redirectUri: redirectUri || null,
       });
-      setAccessToken(token.access_token);
+
+      const normalized = normalizeAccount(session);
+      setAccounts((prev) => {
+        const existing = prev.find((account) => account.email === normalized.email);
+        if (existing) {
+          return prev.map((account) =>
+            account.email === normalized.email
+              ? { ...account, accessToken: normalized.accessToken, color: normalized.color }
+              : account
+          );
+        }
+        return [...prev, normalized];
+      });
+      setActiveAccountEmail(normalized.email);
     } catch (err) {
       const message = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
       setError(message);
@@ -239,14 +350,14 @@ export default function App() {
     }
   };
 
-  const disconnect = async () => {
+  const disconnectAccount = async (email: string) => {
     try {
-      await invoke("clear_google_session");
+      await invoke("clear_google_session", { email });
     } catch {
       // Keep local sign-out behavior even if secure storage cleanup fails.
     }
-    setAccessToken(null);
-    setEvents([]);
+
+    setAccounts((prev) => prev.filter((account) => account.email !== email));
     setError(null);
   };
 
@@ -293,8 +404,10 @@ export default function App() {
 
   const createEvent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!accessToken) {
-      setCreateEventError("You are not authenticated.");
+
+    const account = accounts.find((entry) => entry.email === activeAccountEmail);
+    if (!account) {
+      setCreateEventError("Select an account before creating an event.");
       return;
     }
 
@@ -306,6 +419,7 @@ export default function App() {
 
     setIsCreatingEvent(true);
     setCreateEventError(null);
+
     try {
       let requestBody: Record<string, unknown> = {
         summary,
@@ -330,6 +444,7 @@ export default function App() {
         if (new Date(endIso) <= new Date(startIso)) {
           throw new Error("End time must be after start time.");
         }
+
         requestBody = {
           ...requestBody,
           start: { dateTime: startIso },
@@ -342,7 +457,7 @@ export default function App() {
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: `Bearer ${account.accessToken}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(requestBody),
@@ -364,7 +479,7 @@ export default function App() {
         location: "",
         description: "",
       });
-      await fetchEvents(accessToken, currentMonth);
+      await fetchEvents(accounts, currentMonth);
     } catch (err) {
       setCreateEventError(err instanceof Error ? err.message : "Failed to create event.");
     } finally {
@@ -378,13 +493,13 @@ export default function App() {
 
       {isRestoringSession ? (
         <section className="card">
-          <p>Restoring your saved Google session...</p>
+          <p>Restoring saved Google sessions...</p>
         </section>
-      ) : !accessToken ? (
+      ) : accounts.length === 0 ? (
         <section className="card">
-          <p>Connect your Google account to load monthly view.</p>
-          <button onClick={connectGoogleCalendar} disabled={isAuthenticating}>
-            {isAuthenticating ? "Waiting for Google sign-in..." : "Connect Google Calendar"}
+          <p>Connect one or more Google accounts to load monthly view.</p>
+          <button onClick={connectGoogleAccount} disabled={isAuthenticating}>
+            {isAuthenticating ? "Waiting for Google sign-in..." : "Connect Google Account"}
           </button>
           {error ? <p className="error">{error}</p> : null}
         </section>
@@ -408,12 +523,42 @@ export default function App() {
             >
               Today
             </button>
-            <button onClick={() => void fetchEvents(accessToken, currentMonth)} disabled={isLoading}>
+            <button onClick={() => void fetchEvents(accounts, currentMonth)} disabled={isLoading}>
               {isLoading ? "Syncing..." : "Sync"}
             </button>
-            <button onClick={() => void disconnect()} className="secondary">
-              Disconnect
+            <button onClick={connectGoogleAccount} disabled={isAuthenticating}>
+              {isAuthenticating ? "Connecting..." : "Add Account"}
             </button>
+          </div>
+
+          <div className="account-list">
+            {accounts.map((account) => (
+              <div
+                key={account.email}
+                className={`account-chip ${activeAccountEmail === account.email ? "active" : ""}`}
+                onClick={() => setActiveAccountEmail(account.email)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setActiveAccountEmail(account.email);
+                  }
+                }}
+              >
+                <span className="account-dot" style={{ backgroundColor: account.color }} />
+                <span className="account-email">{account.email}</span>
+                <button
+                  className="chip-remove"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void disconnectAccount(account.email);
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
           </div>
 
           {error ? <p className="error">{error}</p> : null}
@@ -421,15 +566,7 @@ export default function App() {
           <div className="calendar-layout">
             <div className="calendar-pane">
               <div className="weekday-row">
-                {[
-                  "Sun",
-                  "Mon",
-                  "Tue",
-                  "Wed",
-                  "Thu",
-                  "Fri",
-                  "Sat",
-                ].map((label) => (
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
                   <div key={label} className="weekday-cell">
                     {label}
                   </div>
@@ -460,7 +597,11 @@ export default function App() {
                       <div className="day-number">{cell.date.getDate()}</div>
                       <ul className="day-events">
                         {dayEvents.map((event) => (
-                          <li key={event.id} className="day-event-item">
+                          <li
+                            key={`${event.sourceEmail}:${event.id}`}
+                            className="day-event-item"
+                            style={{ borderLeftColor: event.sourceColor }}
+                          >
                             <span className="event-time">{formatEventTime(event)}</span>
                             {event.htmlLink ? (
                               <a href={event.htmlLink} target="_blank" rel="noreferrer">
@@ -494,6 +635,20 @@ export default function App() {
 
               {showCreateEventForm ? (
                 <form className="event-form" onSubmit={createEvent}>
+                  <label>
+                    Account
+                    <select
+                      value={activeAccountEmail}
+                      onChange={(event) => setActiveAccountEmail(event.target.value)}
+                    >
+                      {accounts.map((account) => (
+                        <option key={account.email} value={account.email}>
+                          {account.email}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
                   <label>
                     Title
                     <input
@@ -567,7 +722,7 @@ export default function App() {
                   </label>
 
                   {createEventError ? <p className="error">{createEventError}</p> : null}
-                  <button type="submit" disabled={isCreatingEvent}>
+                  <button type="submit" disabled={isCreatingEvent || accounts.length === 0}>
                     {isCreatingEvent ? "Creating..." : "Create Event"}
                   </button>
                 </form>
@@ -578,9 +733,17 @@ export default function App() {
               ) : (
                 <ul className="detail-events">
                   {selectedDayEvents.map((event) => (
-                    <li key={event.id} className="detail-event-item">
+                    <li
+                      key={`${event.sourceEmail}:${event.id}`}
+                      className="detail-event-item"
+                      style={{ borderLeftColor: event.sourceColor }}
+                    >
                       <strong>{event.summary ?? "Untitled event"}</strong>
                       <p>{formatEventTime(event)}</p>
+                      <p className="detail-meta">
+                        <span className="account-dot" style={{ backgroundColor: event.sourceColor }} />
+                        {event.sourceEmail}
+                      </p>
                       {event.location ? <p>{event.location}</p> : null}
                       {event.htmlLink ? (
                         <a href={event.htmlLink} target="_blank" rel="noreferrer">

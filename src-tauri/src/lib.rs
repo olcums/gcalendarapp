@@ -4,14 +4,18 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::Manager;
 use url::Url;
 
 #[derive(Serialize)]
-struct GoogleAuthToken {
+struct GoogleSession {
+    email: String,
     access_token: String,
 }
 
@@ -27,16 +31,27 @@ struct GoogleTokenError {
     error_description: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct GoogleUserInfo {
+    email: String,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct SavedAccounts {
+    accounts: Vec<String>,
+}
+
 const KEYRING_SERVICE: &str = "gcalendarwin";
-const KEYRING_REFRESH_TOKEN_ACCOUNT: &str = "google_refresh_token";
+const ACCOUNTS_FILE: &str = "google_accounts.json";
 
 #[tauri::command]
 fn login_with_google(
+    app: tauri::AppHandle,
     client_id: String,
     client_secret: Option<String>,
     redirect_uri: Option<String>,
-) -> Result<GoogleAuthToken, String> {
-    const SCOPE: &str = "https://www.googleapis.com/auth/calendar";
+) -> Result<GoogleSession, String> {
+    const SCOPE: &str = "openid email https://www.googleapis.com/auth/calendar";
 
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);
@@ -89,32 +104,58 @@ fn login_with_google(
         &code,
         &final_redirect_uri,
     )?;
+
+    let email = fetch_user_email(&token.access_token)?;
+
     if let Some(refresh_token) = token.refresh_token.as_deref() {
-        save_refresh_token(refresh_token)?;
+        save_refresh_token(&email, refresh_token)?;
+        upsert_saved_account(&app, &email)?;
     }
-    Ok(GoogleAuthToken {
+
+    Ok(GoogleSession {
+        email,
         access_token: token.access_token,
     })
 }
 
 #[tauri::command]
-fn restore_google_session(
+fn restore_google_sessions(
+    app: tauri::AppHandle,
     client_id: String,
     client_secret: Option<String>,
-) -> Result<GoogleAuthToken, String> {
-    let refresh_token = load_refresh_token()?;
-    let token = exchange_refresh_token(&client_id, client_secret.as_deref(), &refresh_token)?;
-    if let Some(new_refresh_token) = token.refresh_token.as_deref() {
-        save_refresh_token(new_refresh_token)?;
+) -> Result<Vec<GoogleSession>, String> {
+    let saved = load_saved_accounts(&app)?;
+    let mut sessions = Vec::new();
+
+    for email in saved.accounts {
+        let refresh_token = match load_refresh_token(&email) {
+            Ok(token) => token,
+            Err(_) => continue,
+        };
+
+        let refreshed = match exchange_refresh_token(&client_id, client_secret.as_deref(), &refresh_token)
+        {
+            Ok(token) => token,
+            Err(_) => continue,
+        };
+
+        if let Some(new_refresh_token) = refreshed.refresh_token.as_deref() {
+            let _ = save_refresh_token(&email, new_refresh_token);
+        }
+
+        sessions.push(GoogleSession {
+            email,
+            access_token: refreshed.access_token,
+        });
     }
-    Ok(GoogleAuthToken {
-        access_token: token.access_token,
-    })
+
+    Ok(sessions)
 }
 
 #[tauri::command]
-fn clear_google_session() -> Result<(), String> {
-    clear_refresh_token()
+fn clear_google_session(app: tauri::AppHandle, email: String) -> Result<(), String> {
+    clear_refresh_token(&email)?;
+    remove_saved_account(&app, &email)
 }
 
 fn resolve_fixed_loopback_redirect(redirect_uri: &str) -> Result<(String, String), String> {
@@ -305,24 +346,53 @@ fn exchange_refresh_token(
         .map_err(|e| format!("Failed to parse refresh response: {e}"))
 }
 
-fn save_refresh_token(token: &str) -> Result<(), String> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_REFRESH_TOKEN_ACCOUNT)
+fn fetch_user_email(access_token: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|e| format!("Failed to fetch Google user profile: {e}"))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|e| format!("Failed to read Google user profile: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Failed to fetch Google account email (status {}).",
+            status.as_u16()
+        ));
+    }
+
+    let profile = serde_json::from_str::<GoogleUserInfo>(&body)
+        .map_err(|e| format!("Failed to parse Google user profile: {e}"))?;
+    Ok(profile.email)
+}
+
+fn keyring_account_name(email: &str) -> String {
+    format!("google_refresh_token:{email}")
+}
+
+fn save_refresh_token(email: &str, token: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, &keyring_account_name(email))
         .map_err(|e| format!("Failed to open secure storage: {e}"))?;
     entry
         .set_password(token)
         .map_err(|e| format!("Failed to store refresh token securely: {e}"))
 }
 
-fn load_refresh_token() -> Result<String, String> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_REFRESH_TOKEN_ACCOUNT)
+fn load_refresh_token(email: &str) -> Result<String, String> {
+    let entry = Entry::new(KEYRING_SERVICE, &keyring_account_name(email))
         .map_err(|e| format!("Failed to open secure storage: {e}"))?;
-    entry.get_password().map_err(|_| {
-        "No saved Google session. Please connect your Google Calendar once.".to_string()
-    })
+    entry
+        .get_password()
+        .map_err(|e| format!("No refresh token available for {email}: {e}"))
 }
 
-fn clear_refresh_token() -> Result<(), String> {
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_REFRESH_TOKEN_ACCOUNT)
+fn clear_refresh_token(email: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, &keyring_account_name(email))
         .map_err(|e| format!("Failed to open secure storage: {e}"))?;
     match entry.delete_password() {
         Ok(_) => Ok(()),
@@ -331,13 +401,56 @@ fn clear_refresh_token() -> Result<(), String> {
     }
 }
 
+fn accounts_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data directory: {e}"))?;
+    Ok(dir.join(ACCOUNTS_FILE))
+}
+
+fn load_saved_accounts(app: &tauri::AppHandle) -> Result<SavedAccounts, String> {
+    let path = accounts_file_path(app)?;
+    if !path.exists() {
+        return Ok(SavedAccounts::default());
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read saved accounts file: {e}"))?;
+    serde_json::from_str::<SavedAccounts>(&raw)
+        .map_err(|e| format!("Failed to parse saved accounts file: {e}"))
+}
+
+fn save_accounts(app: &tauri::AppHandle, saved: &SavedAccounts) -> Result<(), String> {
+    let path = accounts_file_path(app)?;
+    let raw = serde_json::to_string(saved)
+        .map_err(|e| format!("Failed to serialize saved accounts: {e}"))?;
+    fs::write(path, raw).map_err(|e| format!("Failed to write saved accounts file: {e}"))
+}
+
+fn upsert_saved_account(app: &tauri::AppHandle, email: &str) -> Result<(), String> {
+    let mut saved = load_saved_accounts(app)?;
+    if !saved.accounts.iter().any(|e| e == email) {
+        saved.accounts.push(email.to_string());
+        save_accounts(app, &saved)?;
+    }
+    Ok(())
+}
+
+fn remove_saved_account(app: &tauri::AppHandle, email: &str) -> Result<(), String> {
+    let mut saved = load_saved_accounts(app)?;
+    saved.accounts.retain(|e| e != email);
+    save_accounts(app, &saved)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             login_with_google,
-            restore_google_session,
+            restore_google_sessions,
             clear_google_session
         ])
         .run(tauri::generate_context!())
