@@ -251,6 +251,7 @@ export default function App() {
   };
 
   const monthGrid = useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
+  const todayKey = useMemo(() => toDayKey(new Date()), []);
 
   const eventsByDay = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>();
@@ -397,6 +398,16 @@ export default function App() {
             <button onClick={() => setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}>
               Next
             </button>
+            <button
+              onClick={() => {
+                const now = new Date();
+                setCurrentMonth(getMonthStart(now));
+                setSelectedDayKey(toDayKey(now));
+              }}
+              className="secondary"
+            >
+              Today
+            </button>
             <button onClick={() => void fetchEvents(accessToken, currentMonth)} disabled={isLoading}>
               {isLoading ? "Syncing..." : "Sync"}
             </button>
@@ -430,6 +441,7 @@ export default function App() {
                   const key = toDayKey(cell.date);
                   const dayEvents = eventsByDay.get(key) ?? [];
                   const isSelected = key === selectedDayKey;
+                  const isToday = key === todayKey;
 
                   return (
                     <div
@@ -443,7 +455,7 @@ export default function App() {
                           setSelectedDayKey(key);
                         }
                       }}
-                      className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"} ${isSelected ? "day-selected" : ""}`}
+                      className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"} ${isSelected ? "day-selected" : ""} ${isToday ? "day-today" : ""}`}
                     >
                       <div className="day-number">{cell.date.getDate()}</div>
                       <ul className="day-events">
