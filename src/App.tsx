@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -17,44 +17,87 @@ type CalendarEvent = {
   };
 };
 
-function formatEventDate(dateTime?: string, date?: string): string {
-  const value = dateTime ?? date;
-  if (!value) {
-    return "No date";
+type MonthCell = {
+  date: Date;
+  inCurrentMonth: boolean;
+};
+
+function getMonthStart(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function formatEventTime(event: CalendarEvent): string {
+  if (event.start?.date) {
+    return "All day";
   }
 
-  if (dateTime) {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(dateTime));
+  if (!event.start?.dateTime) {
+    return "No time";
   }
 
   return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-  }).format(new Date(`${date}T00:00:00`));
+    timeStyle: "short",
+  }).format(new Date(event.start.dateTime));
+}
+
+function getEventDayKey(event: CalendarEvent): string | null {
+  if (event.start?.date) {
+    return event.start.date;
+  }
+
+  if (event.start?.dateTime) {
+    return event.start.dateTime.slice(0, 10);
+  }
+
+  return null;
+}
+
+function toDayKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function buildMonthGrid(monthStart: Date): MonthCell[] {
+  const firstDay = new Date(monthStart);
+  const startWeekday = firstDay.getDay();
+  const gridStart = new Date(firstDay);
+  gridStart.setDate(firstDay.getDate() - startWeekday);
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + index);
+    return {
+      date,
+      inCurrentMonth: date.getMonth() === monthStart.getMonth(),
+    };
+  });
 }
 
 export default function App() {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
   const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
   const redirectUri = import.meta.env.VITE_GOOGLE_REDIRECT_URI;
+
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentMonth, setCurrentMonth] = useState(getMonthStart(new Date()));
 
-  const fetchEvents = useCallback(async (token: string) => {
+  const fetchEvents = useCallback(async (token: string, monthStart: Date) => {
     setIsLoading(true);
     setError(null);
 
     try {
+      const rangeStart = new Date(monthStart.getFullYear(), monthStart.getMonth(), 1);
+      const rangeEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+
       const params = new URLSearchParams({
-        maxResults: "20",
+        maxResults: "2500",
         orderBy: "startTime",
         singleEvents: "true",
-        timeMin: new Date().toISOString(),
+        timeMin: rangeStart.toISOString(),
+        timeMax: rangeEnd.toISOString(),
       });
 
       const response = await fetch(
@@ -68,9 +111,7 @@ export default function App() {
 
       if (!response.ok) {
         const payload = await response.json().catch(() => null);
-        const message =
-          payload?.error?.message ??
-          "Failed to fetch events from Google Calendar.";
+        const message = payload?.error?.message ?? "Failed to fetch events from Google Calendar.";
         throw new Error(message);
       }
 
@@ -90,8 +131,8 @@ export default function App() {
       return;
     }
 
-    void fetchEvents(accessToken);
-  }, [accessToken, fetchEvents]);
+    void fetchEvents(accessToken, currentMonth);
+  }, [accessToken, currentMonth, fetchEvents]);
 
   const connectGoogleCalendar = async () => {
     if (!clientId) {
@@ -101,6 +142,7 @@ export default function App() {
 
     setIsAuthenticating(true);
     setError(null);
+
     try {
       const token = await invoke<{ access_token: string }>("login_with_google", {
         clientId,
@@ -109,12 +151,7 @@ export default function App() {
       });
       setAccessToken(token.access_token);
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : typeof err === "string"
-            ? err
-            : JSON.stringify(err);
+      const message = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
       setError(message);
     } finally {
       setIsAuthenticating(false);
@@ -127,25 +164,56 @@ export default function App() {
     setError(null);
   };
 
+  const monthGrid = useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
+
+  const eventsByDay = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    for (const event of events) {
+      const key = getEventDayKey(event);
+      if (!key) continue;
+      const bucket = map.get(key);
+      if (bucket) {
+        bucket.push(event);
+      } else {
+        map.set(key, [event]);
+      }
+    }
+    return map;
+  }, [events]);
+
+  const monthTitle = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        month: "long",
+        year: "numeric",
+      }).format(currentMonth),
+    [currentMonth]
+  );
+
   return (
     <main className="app-shell">
       <h1>Google Calendar Sync</h1>
 
       {!accessToken ? (
         <section className="card">
-          <p>Connect your Google account to load upcoming events.</p>
+          <p>Connect your Google account to load monthly view.</p>
           <button onClick={connectGoogleCalendar} disabled={isAuthenticating}>
-            {isAuthenticating
-              ? "Waiting for Google sign-in..."
-              : "Connect Google Calendar"}
+            {isAuthenticating ? "Waiting for Google sign-in..." : "Connect Google Calendar"}
           </button>
           {error ? <p className="error">{error}</p> : null}
         </section>
       ) : (
         <section className="card">
-          <div className="actions">
-            <button onClick={() => void fetchEvents(accessToken)} disabled={isLoading}>
-              {isLoading ? "Syncing..." : "Sync Now"}
+          <div className="actions month-actions">
+            <button onClick={() => setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}>
+              Prev
+            </button>
+            <h2 className="month-title">{monthTitle}</h2>
+            <button onClick={() => setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}>
+              Next
+            </button>
+            <button onClick={() => void fetchEvents(accessToken, currentMonth)} disabled={isLoading}>
+              {isLoading ? "Syncing..." : "Sync"}
             </button>
             <button onClick={disconnect} className="secondary">
               Disconnect
@@ -154,24 +222,48 @@ export default function App() {
 
           {error ? <p className="error">{error}</p> : null}
 
-          {!isLoading && events.length === 0 ? (
-            <p>No upcoming events found.</p>
-          ) : (
-            <ul className="event-list">
-              {events.map((event) => (
-                <li key={event.id} className="event-item">
-                  <h2>{event.summary ?? "Untitled event"}</h2>
-                  <p>{formatEventDate(event.start?.dateTime, event.start?.date)}</p>
-                  {event.location ? <p>{event.location}</p> : null}
-                  {event.htmlLink ? (
-                    <a href={event.htmlLink} target="_blank" rel="noreferrer">
-                      Open in Google Calendar
-                    </a>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="weekday-row">
+            {[
+              "Sun",
+              "Mon",
+              "Tue",
+              "Wed",
+              "Thu",
+              "Fri",
+              "Sat",
+            ].map((label) => (
+              <div key={label} className="weekday-cell">
+                {label}
+              </div>
+            ))}
+          </div>
+
+          <div className="month-grid">
+            {monthGrid.map((cell) => {
+              const key = toDayKey(cell.date);
+              const dayEvents = eventsByDay.get(key) ?? [];
+
+              return (
+                <div key={key} className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"}`}>
+                  <div className="day-number">{cell.date.getDate()}</div>
+                  <ul className="day-events">
+                    {dayEvents.map((event) => (
+                      <li key={event.id} className="day-event-item">
+                        <span className="event-time">{formatEventTime(event)}</span>
+                        {event.htmlLink ? (
+                          <a href={event.htmlLink} target="_blank" rel="noreferrer">
+                            {event.summary ?? "Untitled event"}
+                          </a>
+                        ) : (
+                          <span>{event.summary ?? "Untitled event"}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
     </main>
