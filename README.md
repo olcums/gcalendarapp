@@ -35,4 +35,5 @@ npm run tauri dev
 - Supports multiple Google accounts in one view.
 - Uses distinct colors per account for month/day events.
 - Lets you create events to the selected account calendar.
+- Triggers local desktop notifications for upcoming timed events.
 - Stores refresh tokens securely in OS credential storage and restores sessions automatically on app startup.

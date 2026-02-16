@@ -1,5 +1,6 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import "./App.css";
 
 type GoogleSession = {
@@ -28,6 +29,13 @@ type CalendarEvent = {
     date?: string;
     dateTime?: string;
   };
+  reminders?: {
+    useDefault?: boolean;
+    overrides?: Array<{
+      method?: string;
+      minutes?: number;
+    }>;
+  };
 };
 
 type MonthCell = {
@@ -42,6 +50,8 @@ type NewEventForm = {
   endTime: string;
   location: string;
   description: string;
+  reminderMode: "default" | "none" | "custom";
+  reminderMinutes: string;
 };
 
 const ACCOUNT_COLORS = [
@@ -151,6 +161,20 @@ function eventStartMs(event: CalendarEvent): number {
   return Number.MAX_SAFE_INTEGER;
 }
 
+function getReminderMinutes(event: CalendarEvent): number | null {
+  const overrides = event.reminders?.overrides ?? [];
+  const popupReminder = overrides.find((entry) => entry.method === "popup");
+  if (popupReminder?.minutes !== undefined) {
+    return popupReminder.minutes;
+  }
+
+  if (event.reminders?.useDefault === false && overrides.length === 0) {
+    return null;
+  }
+
+  return 10;
+}
+
 export default function App() {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
   const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
@@ -168,6 +192,8 @@ export default function App() {
   const [showCreateEventForm, setShowCreateEventForm] = useState(false);
   const [isCreatingEvent, setIsCreatingEvent] = useState(false);
   const [createEventError, setCreateEventError] = useState<string | null>(null);
+  const [notificationPermissionChecked, setNotificationPermissionChecked] = useState(false);
+  const notifiedReminderKeys = useRef<Set<string>>(new Set());
   const [newEventForm, setNewEventForm] = useState<NewEventForm>({
     summary: "",
     allDay: false,
@@ -175,6 +201,8 @@ export default function App() {
     endTime: "10:00",
     location: "",
     description: "",
+    reminderMode: "default",
+    reminderMinutes: "10",
   });
 
   const fetchEvents = useCallback(async (accountsToLoad: ConnectedAccount[], monthStart: Date) => {
@@ -313,6 +341,89 @@ export default function App() {
     }
   }, [accounts, activeAccountEmail]);
 
+  useEffect(() => {
+    if (notificationPermissionChecked) {
+      return;
+    }
+
+    let alive = true;
+    const ensureNotificationPermission = async () => {
+      try {
+        const granted = await isPermissionGranted();
+        if (!alive) {
+          return;
+        }
+
+        if (!granted) {
+          await requestPermission();
+        }
+      } finally {
+        if (alive) {
+          setNotificationPermissionChecked(true);
+        }
+      }
+    };
+
+    void ensureNotificationPermission();
+    return () => {
+      alive = false;
+    };
+  }, [notificationPermissionChecked]);
+
+  useEffect(() => {
+    if (events.length === 0) {
+      return;
+    }
+
+    const triggerDueNotifications = async () => {
+      const nowMs = Date.now();
+      for (const event of events) {
+        if (!event.start?.dateTime) {
+          continue;
+        }
+
+        const reminderMinutes = getReminderMinutes(event);
+        if (reminderMinutes === null) {
+          continue;
+        }
+
+        const startMs = new Date(event.start.dateTime).getTime();
+        const reminderAtMs = startMs - reminderMinutes * 60_000;
+        const reminderWindowEndMs = reminderAtMs + 45_000;
+        if (nowMs < reminderAtMs || nowMs > reminderWindowEndMs) {
+          continue;
+        }
+
+        const key = `${event.sourceEmail}:${event.id}:${event.start.dateTime}:${reminderMinutes}`;
+        if (notifiedReminderKeys.current.has(key)) {
+          continue;
+        }
+
+        notifiedReminderKeys.current.add(key);
+        try {
+          const timeLabel = new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(
+            new Date(event.start.dateTime)
+          );
+          await sendNotification({
+            title: event.summary ?? "Upcoming calendar event",
+            body: `${event.sourceEmail} • Starts at ${timeLabel}`,
+          });
+        } catch {
+          // Notification failures should not interrupt calendar rendering.
+        }
+      }
+    };
+
+    void triggerDueNotifications();
+    const timer = window.setInterval(() => {
+      void triggerDueNotifications();
+    }, 20_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [events]);
+
   const connectGoogleAccount = async () => {
     if (!clientId) {
       setError("Missing VITE_GOOGLE_CLIENT_ID in .env");
@@ -431,6 +542,19 @@ export default function App() {
       if (newEventForm.description.trim()) {
         requestBody.description = newEventForm.description.trim();
       }
+      if (newEventForm.reminderMode === "none") {
+        requestBody.reminders = { useDefault: false, overrides: [] };
+      }
+      if (newEventForm.reminderMode === "custom") {
+        const minutes = Number(newEventForm.reminderMinutes);
+        if (!Number.isInteger(minutes) || minutes < 0) {
+          throw new Error("Reminder minutes must be a non-negative number.");
+        }
+        requestBody.reminders = {
+          useDefault: false,
+          overrides: [{ method: "popup", minutes }],
+        };
+      }
 
       if (newEventForm.allDay) {
         requestBody = {
@@ -478,6 +602,8 @@ export default function App() {
         endTime: "10:00",
         location: "",
         description: "",
+        reminderMode: "default",
+        reminderMinutes: "10",
       });
       await fetchEvents(accounts, currentMonth);
     } catch (err) {
@@ -720,6 +846,42 @@ export default function App() {
                       }
                     />
                   </label>
+
+                  <label>
+                    Reminder
+                    <select
+                      value={newEventForm.reminderMode}
+                      onChange={(event) =>
+                        setNewEventForm((prev) => ({
+                          ...prev,
+                          reminderMode: event.target.value as NewEventForm["reminderMode"],
+                        }))
+                      }
+                    >
+                      <option value="default">Default calendar reminder</option>
+                      <option value="none">No reminder</option>
+                      <option value="custom">Custom popup reminder</option>
+                    </select>
+                  </label>
+
+                  {newEventForm.reminderMode === "custom" ? (
+                    <label>
+                      Minutes before event
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={newEventForm.reminderMinutes}
+                        onChange={(event) =>
+                          setNewEventForm((prev) => ({
+                            ...prev,
+                            reminderMinutes: event.target.value,
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+                  ) : null}
 
                   {createEventError ? <p className="error">{createEventError}</p> : null}
                   <button type="submit" disabled={isCreatingEvent || accounts.length === 0}>

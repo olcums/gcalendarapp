@@ -448,6 +448,7 @@ fn remove_saved_account(app: &tauri::AppHandle, email: &str) -> Result<(), Strin
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             login_with_google,
             restore_google_sessions,
