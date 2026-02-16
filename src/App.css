@@ -187,6 +187,54 @@ button.secondary {
   margin: 0 0 0.5rem;
 }
 
+.day-detail-actions {
+  margin-bottom: 0.7rem;
+}
+
+.event-form {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.8rem;
+  border: 1px solid #e3ebfb;
+  border-radius: 8px;
+  padding: 0.65rem;
+  background: #ffffff;
+}
+
+.event-form label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.86rem;
+  color: #334862;
+}
+
+.event-form input,
+.event-form textarea {
+  width: 100%;
+  border: 1px solid #ced9ec;
+  border-radius: 8px;
+  padding: 0.45rem 0.5rem;
+  font: inherit;
+  color: #152032;
+  background: #ffffff;
+}
+
+.checkbox-line {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.checkbox-line input[type="checkbox"] {
+  width: auto;
+}
+
+.time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
 .detail-events {
   list-style: none;
   margin: 0;
@@ -249,6 +297,10 @@ button.secondary {
   }
 
   .month-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .time-grid {
     grid-template-columns: 1fr;
   }
 }

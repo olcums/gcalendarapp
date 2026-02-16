@@ -36,7 +36,7 @@ fn login_with_google(
     client_secret: Option<String>,
     redirect_uri: Option<String>,
 ) -> Result<GoogleAuthToken, String> {
-    const SCOPE: &str = "https://www.googleapis.com/auth/calendar.readonly";
+    const SCOPE: &str = "https://www.googleapis.com/auth/calendar";
 
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);

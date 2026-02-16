@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -20,6 +20,15 @@ type CalendarEvent = {
 type MonthCell = {
   date: Date;
   inCurrentMonth: boolean;
+};
+
+type NewEventForm = {
+  summary: string;
+  allDay: boolean;
+  startTime: string;
+  endTime: string;
+  location: string;
+  description: string;
 };
 
 function getMonthStart(date: Date): Date {
@@ -46,14 +55,34 @@ function getEventDayKey(event: CalendarEvent): string | null {
   }
 
   if (event.start?.dateTime) {
-    return event.start.dateTime.slice(0, 10);
+    return toDayKey(new Date(event.start.dateTime));
   }
 
   return null;
 }
 
 function toDayKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDayKey(dayKey: string): Date {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function buildDateTimeIso(dayKey: string, time: string): string {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  const [hours, minutes] = time.split(":").map(Number);
+  return new Date(year, month - 1, day, hours, minutes, 0, 0).toISOString();
+}
+
+function nextDayKey(dayKey: string): string {
+  const date = parseDayKey(dayKey);
+  date.setDate(date.getDate() + 1);
+  return toDayKey(date);
 }
 
 function buildMonthGrid(monthStart: Date): MonthCell[] {
@@ -85,6 +114,17 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [currentMonth, setCurrentMonth] = useState(getMonthStart(new Date()));
   const [selectedDayKey, setSelectedDayKey] = useState(toDayKey(new Date()));
+  const [showCreateEventForm, setShowCreateEventForm] = useState(false);
+  const [isCreatingEvent, setIsCreatingEvent] = useState(false);
+  const [createEventError, setCreateEventError] = useState<string | null>(null);
+  const [newEventForm, setNewEventForm] = useState<NewEventForm>({
+    summary: "",
+    allDay: false,
+    startTime: "09:00",
+    endTime: "10:00",
+    location: "",
+    description: "",
+  });
 
   const fetchEvents = useCallback(async (token: string, monthStart: Date) => {
     setIsLoading(true);
@@ -237,19 +277,99 @@ export default function App() {
   );
 
   const selectedDateLabel = useMemo(() => {
-    const [year, month, day] = selectedDayKey.split("-").map(Number);
     return new Intl.DateTimeFormat(undefined, {
       weekday: "long",
       month: "long",
       day: "numeric",
       year: "numeric",
-    }).format(new Date(year, month - 1, day));
+    }).format(parseDayKey(selectedDayKey));
   }, [selectedDayKey]);
 
   const selectedDayEvents = useMemo(
     () => eventsByDay.get(selectedDayKey) ?? [],
     [eventsByDay, selectedDayKey]
   );
+
+  const createEvent = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!accessToken) {
+      setCreateEventError("You are not authenticated.");
+      return;
+    }
+
+    const summary = newEventForm.summary.trim();
+    if (!summary) {
+      setCreateEventError("Event title is required.");
+      return;
+    }
+
+    setIsCreatingEvent(true);
+    setCreateEventError(null);
+    try {
+      let requestBody: Record<string, unknown> = {
+        summary,
+      };
+
+      if (newEventForm.location.trim()) {
+        requestBody.location = newEventForm.location.trim();
+      }
+      if (newEventForm.description.trim()) {
+        requestBody.description = newEventForm.description.trim();
+      }
+
+      if (newEventForm.allDay) {
+        requestBody = {
+          ...requestBody,
+          start: { date: selectedDayKey },
+          end: { date: nextDayKey(selectedDayKey) },
+        };
+      } else {
+        const startIso = buildDateTimeIso(selectedDayKey, newEventForm.startTime);
+        const endIso = buildDateTimeIso(selectedDayKey, newEventForm.endTime);
+        if (new Date(endIso) <= new Date(startIso)) {
+          throw new Error("End time must be after start time.");
+        }
+        requestBody = {
+          ...requestBody,
+          start: { dateTime: startIso },
+          end: { dateTime: endIso },
+        };
+      }
+
+      const response = await fetch(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        }
+      );
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        const message = payload?.error?.message ?? "Failed to create calendar event.";
+        throw new Error(message);
+      }
+
+      setShowCreateEventForm(false);
+      setNewEventForm({
+        summary: "",
+        allDay: false,
+        startTime: "09:00",
+        endTime: "10:00",
+        location: "",
+        description: "",
+      });
+      await fetchEvents(accessToken, currentMonth);
+    } catch (err) {
+      setCreateEventError(err instanceof Error ? err.message : "Failed to create event.");
+    } finally {
+      setIsCreatingEvent(false);
+    }
+  };
 
   return (
     <main className="app-shell">
@@ -348,6 +468,99 @@ export default function App() {
 
             <section className="day-detail">
               <h3>{selectedDateLabel}</h3>
+              <div className="day-detail-actions">
+                <button
+                  onClick={() => {
+                    setShowCreateEventForm((prev) => !prev);
+                    setCreateEventError(null);
+                  }}
+                  className="secondary"
+                >
+                  {showCreateEventForm ? "Cancel" : "Add Event"}
+                </button>
+              </div>
+
+              {showCreateEventForm ? (
+                <form className="event-form" onSubmit={createEvent}>
+                  <label>
+                    Title
+                    <input
+                      type="text"
+                      value={newEventForm.summary}
+                      onChange={(event) =>
+                        setNewEventForm((prev) => ({ ...prev, summary: event.target.value }))
+                      }
+                      required
+                    />
+                  </label>
+
+                  <label className="checkbox-line">
+                    <input
+                      type="checkbox"
+                      checked={newEventForm.allDay}
+                      onChange={(event) =>
+                        setNewEventForm((prev) => ({ ...prev, allDay: event.target.checked }))
+                      }
+                    />
+                    All day
+                  </label>
+
+                  {!newEventForm.allDay ? (
+                    <div className="time-grid">
+                      <label>
+                        Start
+                        <input
+                          type="time"
+                          value={newEventForm.startTime}
+                          onChange={(event) =>
+                            setNewEventForm((prev) => ({ ...prev, startTime: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+                      <label>
+                        End
+                        <input
+                          type="time"
+                          value={newEventForm.endTime}
+                          onChange={(event) =>
+                            setNewEventForm((prev) => ({ ...prev, endTime: event.target.value }))
+                          }
+                          required
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  <label>
+                    Location
+                    <input
+                      type="text"
+                      value={newEventForm.location}
+                      onChange={(event) =>
+                        setNewEventForm((prev) => ({ ...prev, location: event.target.value }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Notes
+                    <textarea
+                      rows={3}
+                      value={newEventForm.description}
+                      onChange={(event) =>
+                        setNewEventForm((prev) => ({ ...prev, description: event.target.value }))
+                      }
+                    />
+                  </label>
+
+                  {createEventError ? <p className="error">{createEventError}</p> : null}
+                  <button type="submit" disabled={isCreatingEvent}>
+                    {isCreatingEvent ? "Creating..." : "Create Event"}
+                  </button>
+                </form>
+              ) : null}
+
               {selectedDayEvents.length === 0 ? (
                 <p>No events on this day.</p>
               ) : (
