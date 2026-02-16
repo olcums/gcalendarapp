@@ -27,3 +27,4 @@ rand = "0.8"
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
 sha2 = "0.10"
 url = "2"
+keyring = "2"

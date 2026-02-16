@@ -81,6 +81,7 @@ export default function App() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentMonth, setCurrentMonth] = useState(getMonthStart(new Date()));
 
@@ -126,6 +127,45 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!clientId) {
+      setIsRestoringSession(false);
+      return;
+    }
+
+    let alive = true;
+    const restoreSession = async () => {
+      try {
+        const token = await invoke<{ access_token: string }>("restore_google_session", {
+          clientId,
+          clientSecret: clientSecret || null,
+        });
+        if (alive) {
+          setAccessToken(token.access_token);
+          setError(null);
+        }
+      } catch (err) {
+        if (!alive) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
+        if (!message.includes("No saved Google session")) {
+          setError(message);
+        }
+      } finally {
+        if (alive) {
+          setIsRestoringSession(false);
+        }
+      }
+    };
+
+    void restoreSession();
+
+    return () => {
+      alive = false;
+    };
+  }, [clientId, clientSecret]);
+
+  useEffect(() => {
     if (!accessToken) {
       setEvents([]);
       return;
@@ -158,7 +198,12 @@ export default function App() {
     }
   };
 
-  const disconnect = () => {
+  const disconnect = async () => {
+    try {
+      await invoke("clear_google_session");
+    } catch {
+      // Keep local sign-out behavior even if secure storage cleanup fails.
+    }
     setAccessToken(null);
     setEvents([]);
     setError(null);
@@ -194,7 +239,11 @@ export default function App() {
     <main className="app-shell">
       <h1>Google Calendar Sync</h1>
 
-      {!accessToken ? (
+      {isRestoringSession ? (
+        <section className="card">
+          <p>Restoring your saved Google session...</p>
+        </section>
+      ) : !accessToken ? (
         <section className="card">
           <p>Connect your Google account to load monthly view.</p>
           <button onClick={connectGoogleCalendar} disabled={isAuthenticating}>
@@ -215,7 +264,7 @@ export default function App() {
             <button onClick={() => void fetchEvents(accessToken, currentMonth)} disabled={isLoading}>
               {isLoading ? "Syncing..." : "Sync"}
             </button>
-            <button onClick={disconnect} className="secondary">
+            <button onClick={() => void disconnect()} className="secondary">
               Disconnect
             </button>
           </div>

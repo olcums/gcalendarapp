@@ -34,3 +34,4 @@ npm run tauri dev
 - Signs in with Google OAuth (desktop-safe external browser flow).
 - Requests read-only Calendar scope.
 - Syncs and shows upcoming events from your primary calendar.
+- Stores refresh token securely in OS credential storage and restores session automatically on app startup.

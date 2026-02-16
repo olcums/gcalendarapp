@@ -1,4 +1,5 @@
 use base64::Engine;
+use keyring::Entry;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +18,7 @@ struct GoogleAuthToken {
 #[derive(Deserialize)]
 struct GoogleTokenSuccess {
     access_token: String,
+    refresh_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -24,6 +26,9 @@ struct GoogleTokenError {
     error: String,
     error_description: Option<String>,
 }
+
+const KEYRING_SERVICE: &str = "gcalendarwin";
+const KEYRING_REFRESH_TOKEN_ACCOUNT: &str = "google_refresh_token";
 
 #[tauri::command]
 fn login_with_google(
@@ -84,9 +89,32 @@ fn login_with_google(
         &code,
         &final_redirect_uri,
     )?;
+    if let Some(refresh_token) = token.refresh_token.as_deref() {
+        save_refresh_token(refresh_token)?;
+    }
     Ok(GoogleAuthToken {
         access_token: token.access_token,
     })
+}
+
+#[tauri::command]
+fn restore_google_session(
+    client_id: String,
+    client_secret: Option<String>,
+) -> Result<GoogleAuthToken, String> {
+    let refresh_token = load_refresh_token()?;
+    let token = exchange_refresh_token(&client_id, client_secret.as_deref(), &refresh_token)?;
+    if let Some(new_refresh_token) = token.refresh_token.as_deref() {
+        save_refresh_token(new_refresh_token)?;
+    }
+    Ok(GoogleAuthToken {
+        access_token: token.access_token,
+    })
+}
+
+#[tauri::command]
+fn clear_google_session() -> Result<(), String> {
+    clear_refresh_token()
 }
 
 fn resolve_fixed_loopback_redirect(redirect_uri: &str) -> Result<(String, String), String> {
@@ -232,11 +260,86 @@ fn exchange_auth_code(
         .map_err(|e| format!("Failed to parse token response: {e}"))
 }
 
+fn exchange_refresh_token(
+    client_id: &str,
+    client_secret: Option<&str>,
+    refresh_token: &str,
+) -> Result<GoogleTokenSuccess, String> {
+    let client = reqwest::blocking::Client::new();
+    let mut form_body: Vec<(&str, String)> = vec![
+        ("client_id", client_id.to_string()),
+        ("refresh_token", refresh_token.to_string()),
+        ("grant_type", "refresh_token".to_string()),
+    ];
+    if let Some(secret) = client_secret {
+        if !secret.trim().is_empty() {
+            form_body.push(("client_secret", secret.to_string()));
+        }
+    }
+
+    let response = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&form_body)
+        .send()
+        .map_err(|e| format!("Failed to refresh access token: {e}"))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|e| format!("Failed to read refresh response: {e}"))?;
+
+    if !status.is_success() {
+        if let Ok(err_payload) = serde_json::from_str::<GoogleTokenError>(&body) {
+            let details = err_payload
+                .error_description
+                .unwrap_or_else(|| "No details".to_string());
+            return Err(format!("Google token refresh failed: {} ({details})", err_payload.error));
+        }
+        return Err(format!(
+            "Google token refresh failed with status {}.",
+            status.as_u16()
+        ));
+    }
+
+    serde_json::from_str::<GoogleTokenSuccess>(&body)
+        .map_err(|e| format!("Failed to parse refresh response: {e}"))
+}
+
+fn save_refresh_token(token: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_REFRESH_TOKEN_ACCOUNT)
+        .map_err(|e| format!("Failed to open secure storage: {e}"))?;
+    entry
+        .set_password(token)
+        .map_err(|e| format!("Failed to store refresh token securely: {e}"))
+}
+
+fn load_refresh_token() -> Result<String, String> {
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_REFRESH_TOKEN_ACCOUNT)
+        .map_err(|e| format!("Failed to open secure storage: {e}"))?;
+    entry.get_password().map_err(|_| {
+        "No saved Google session. Please connect your Google Calendar once.".to_string()
+    })
+}
+
+fn clear_refresh_token() -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, KEYRING_REFRESH_TOKEN_ACCOUNT)
+        .map_err(|e| format!("Failed to open secure storage: {e}"))?;
+    match entry.delete_password() {
+        Ok(_) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Failed to clear saved session: {e}")),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![login_with_google])
+        .invoke_handler(tauri::generate_handler![
+            login_with_google,
+            restore_google_session,
+            clear_google_session
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
