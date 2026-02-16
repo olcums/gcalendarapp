@@ -1,0 +1,121 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #152032;
+  background: linear-gradient(180deg, #f4f8ff 0%, #eef4ff 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.app-shell {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 1rem;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #d8e3f6;
+  border-radius: 14px;
+  padding: 1rem;
+  box-shadow: 0 10px 24px rgba(35, 67, 125, 0.08);
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+button {
+  border: 1px solid #2f6fe7;
+  border-radius: 10px;
+  background: #2f6fe7;
+  color: #ffffff;
+  padding: 0.6rem 0.95rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #245ed0;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+button.secondary {
+  border-color: #ced9ec;
+  background: #ffffff;
+  color: #213147;
+}
+
+.event-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.event-item {
+  border: 1px solid #e2ebfa;
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: #f9fbff;
+}
+
+.event-item h2 {
+  margin: 0 0 0.45rem;
+  font-size: 1rem;
+}
+
+.event-item p {
+  margin: 0.25rem 0;
+}
+
+.event-item a {
+  display: inline-block;
+  margin-top: 0.4rem;
+  color: #275fce;
+  text-decoration: none;
+}
+
+.event-item a:hover {
+  text-decoration: underline;
+}
+
+.error {
+  border: 1px solid #f4b8b8;
+  background: #fff1f1;
+  color: #ab1d1d;
+  padding: 0.6rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 640px) {
+  #root {
+    padding: 1rem;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+}
