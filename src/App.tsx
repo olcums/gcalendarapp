@@ -489,7 +489,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <h1>Google Calendar Sync</h1>
+      <h1>G-Calendar</h1>
 
       {isRestoringSession ? (
         <section className="card">
