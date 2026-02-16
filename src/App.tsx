@@ -84,6 +84,7 @@ export default function App() {
   const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentMonth, setCurrentMonth] = useState(getMonthStart(new Date()));
+  const [selectedDayKey, setSelectedDayKey] = useState(toDayKey(new Date()));
 
   const fetchEvents = useCallback(async (token: string, monthStart: Date) => {
     setIsLoading(true);
@@ -235,6 +236,21 @@ export default function App() {
     [currentMonth]
   );
 
+  const selectedDateLabel = useMemo(() => {
+    const [year, month, day] = selectedDayKey.split("-").map(Number);
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(new Date(year, month - 1, day));
+  }, [selectedDayKey]);
+
+  const selectedDayEvents = useMemo(
+    () => eventsByDay.get(selectedDayKey) ?? [],
+    [eventsByDay, selectedDayKey]
+  );
+
   return (
     <main className="app-shell">
       <h1>Google Calendar Sync</h1>
@@ -271,47 +287,86 @@ export default function App() {
 
           {error ? <p className="error">{error}</p> : null}
 
-          <div className="weekday-row">
-            {[
-              "Sun",
-              "Mon",
-              "Tue",
-              "Wed",
-              "Thu",
-              "Fri",
-              "Sat",
-            ].map((label) => (
-              <div key={label} className="weekday-cell">
-                {label}
+          <div className="calendar-layout">
+            <div className="calendar-pane">
+              <div className="weekday-row">
+                {[
+                  "Sun",
+                  "Mon",
+                  "Tue",
+                  "Wed",
+                  "Thu",
+                  "Fri",
+                  "Sat",
+                ].map((label) => (
+                  <div key={label} className="weekday-cell">
+                    {label}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
 
-          <div className="month-grid">
-            {monthGrid.map((cell) => {
-              const key = toDayKey(cell.date);
-              const dayEvents = eventsByDay.get(key) ?? [];
+              <div className="month-grid">
+                {monthGrid.map((cell) => {
+                  const key = toDayKey(cell.date);
+                  const dayEvents = eventsByDay.get(key) ?? [];
+                  const isSelected = key === selectedDayKey;
 
-              return (
-                <div key={key} className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"}`}>
-                  <div className="day-number">{cell.date.getDate()}</div>
-                  <ul className="day-events">
-                    {dayEvents.map((event) => (
-                      <li key={event.id} className="day-event-item">
-                        <span className="event-time">{formatEventTime(event)}</span>
-                        {event.htmlLink ? (
-                          <a href={event.htmlLink} target="_blank" rel="noreferrer">
-                            {event.summary ?? "Untitled event"}
-                          </a>
-                        ) : (
-                          <span>{event.summary ?? "Untitled event"}</span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })}
+                  return (
+                    <div
+                      key={key}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedDayKey(key)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedDayKey(key);
+                        }
+                      }}
+                      className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"} ${isSelected ? "day-selected" : ""}`}
+                    >
+                      <div className="day-number">{cell.date.getDate()}</div>
+                      <ul className="day-events">
+                        {dayEvents.map((event) => (
+                          <li key={event.id} className="day-event-item">
+                            <span className="event-time">{formatEventTime(event)}</span>
+                            {event.htmlLink ? (
+                              <a href={event.htmlLink} target="_blank" rel="noreferrer">
+                                {event.summary ?? "Untitled event"}
+                              </a>
+                            ) : (
+                              <span>{event.summary ?? "Untitled event"}</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <section className="day-detail">
+              <h3>{selectedDateLabel}</h3>
+              {selectedDayEvents.length === 0 ? (
+                <p>No events on this day.</p>
+              ) : (
+                <ul className="detail-events">
+                  {selectedDayEvents.map((event) => (
+                    <li key={event.id} className="detail-event-item">
+                      <strong>{event.summary ?? "Untitled event"}</strong>
+                      <p>{formatEventTime(event)}</p>
+                      {event.location ? <p>{event.location}</p> : null}
+                      {event.htmlLink ? (
+                        <a href={event.htmlLink} target="_blank" rel="noreferrer">
+                          Open in Google Calendar
+                        </a>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
           </div>
         </section>
       )}

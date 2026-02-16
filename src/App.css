@@ -97,16 +97,37 @@ button.secondary {
   gap: 0.4rem;
 }
 
+.calendar-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(260px, 1fr);
+  gap: 1rem;
+}
+
+.calendar-pane {
+  min-width: 0;
+}
+
 .day-cell {
   border: 1px solid #e2ebfa;
   border-radius: 10px;
   padding: 0.5rem;
   min-height: 120px;
   background: #f9fbff;
+  cursor: pointer;
 }
 
 .day-muted {
   opacity: 0.45;
+}
+
+.day-selected {
+  border-color: #2f6fe7;
+  box-shadow: inset 0 0 0 1px #2f6fe7;
+}
+
+.day-cell:focus-visible {
+  outline: 2px solid #2f6fe7;
+  outline-offset: 2px;
 }
 
 .day-number {
@@ -154,7 +175,55 @@ button.secondary {
   margin-bottom: 1rem;
 }
 
+.day-detail {
+  border: 1px solid #e1e9f8;
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: #fbfdff;
+  align-self: start;
+}
+
+.day-detail h3 {
+  margin: 0 0 0.5rem;
+}
+
+.detail-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.detail-event-item {
+  border: 1px solid #e2ebfa;
+  border-radius: 8px;
+  padding: 0.6rem;
+  background: #f9fbff;
+}
+
+.detail-event-item strong {
+  display: block;
+}
+
+.detail-event-item p {
+  margin: 0.25rem 0;
+}
+
+.detail-event-item a {
+  color: #275fce;
+  text-decoration: none;
+}
+
+.detail-event-item a:hover {
+  text-decoration: underline;
+}
+
 @media (max-width: 900px) {
+  .calendar-layout {
+    grid-template-columns: 1fr;
+  }
+
   .month-grid,
   .weekday-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
