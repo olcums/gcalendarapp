@@ -615,8 +615,6 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <h1 className="app-title"><img src="/titlelogo.png" alt="G-Calendar" className="title-logo" /></h1>
-
       {isRestoringSession ? (
         <section className="card">
           <p>Restoring saved Google sessions...</p>
@@ -691,57 +689,59 @@ export default function App() {
 
           <div className="calendar-layout">
             <div className="calendar-pane">
-              <div className="weekday-row">
-                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
-                  <div key={label} className="weekday-cell">
-                    {label}
-                  </div>
-                ))}
-              </div>
-
-              <div className="month-grid">
-                {monthGrid.map((cell) => {
-                  const key = toDayKey(cell.date);
-                  const dayEvents = eventsByDay.get(key) ?? [];
-                  const isSelected = key === selectedDayKey;
-                  const isToday = key === todayKey;
-
-                  return (
-                    <div
-                      key={key}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedDayKey(key)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          setSelectedDayKey(key);
-                        }
-                      }}
-                      className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"} ${isSelected ? "day-selected" : ""} ${isToday ? "day-today" : ""}`}
-                    >
-                      <div className="day-number">{cell.date.getDate()}</div>
-                      <ul className="day-events">
-                        {dayEvents.map((event) => (
-                          <li
-                            key={`${event.sourceEmail}:${event.id}`}
-                            className="day-event-item"
-                            style={{ borderLeftColor: event.sourceColor }}
-                          >
-                            <span className="event-time">{formatEventTime(event)}</span>
-                            {event.htmlLink ? (
-                              <a href={event.htmlLink} target="_blank" rel="noreferrer">
-                                {event.summary ?? "Untitled event"}
-                              </a>
-                            ) : (
-                              <span>{event.summary ?? "Untitled event"}</span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
+              <div className="calendar-scroll">
+                <div className="weekday-row">
+                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
+                    <div key={label} className="weekday-cell">
+                      {label}
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
+
+                <div className="month-grid">
+                  {monthGrid.map((cell) => {
+                    const key = toDayKey(cell.date);
+                    const dayEvents = eventsByDay.get(key) ?? [];
+                    const isSelected = key === selectedDayKey;
+                    const isToday = key === todayKey;
+
+                    return (
+                      <div
+                        key={key}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedDayKey(key)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setSelectedDayKey(key);
+                          }
+                        }}
+                        className={`day-cell ${cell.inCurrentMonth ? "" : "day-muted"} ${isSelected ? "day-selected" : ""} ${isToday ? "day-today" : ""}`}
+                      >
+                        <div className="day-number">{cell.date.getDate()}</div>
+                        <ul className="day-events">
+                          {dayEvents.map((event) => (
+                            <li
+                              key={`${event.sourceEmail}:${event.id}`}
+                              className="day-event-item"
+                              style={{ borderLeftColor: event.sourceColor }}
+                            >
+                              <span className="event-time">{formatEventTime(event)}</span>
+                              {event.htmlLink ? (
+                                <a href={event.htmlLink} target="_blank" rel="noreferrer">
+                                  {event.summary ?? "Untitled event"}
+                                </a>
+                              ) : (
+                                <span>{event.summary ?? "Untitled event"}</span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 

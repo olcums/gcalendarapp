@@ -2,6 +2,7 @@
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   color: #152032;
   background: linear-gradient(180deg, #f4f8ff 0%, #eef4ff 100%);
+  --space: 0.75rem;
 }
 
 * {
@@ -15,47 +16,28 @@ body {
 
 #root {
   min-height: 100vh;
-  padding: 1.5rem;
+  padding: clamp(0.45rem, 1vw, 0.85rem);
 }
 
 .app-shell {
-  max-width: 1100px;
-  margin: 0 auto;
-}
-
-h1 {
-  margin: 0 0 1rem;
-}
-
-.app-title {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 0 0.35rem;
-  line-height: 0;
-}
-
-.title-logo {
-  display: block;
-  max-width: min(980px, 100%);
   width: 100%;
-  height: auto;
-  max-height: 180px;
-  object-fit: contain;
+  max-width: 1800px;
+  margin: 0 auto;
+  padding-bottom: var(--space);
 }
 
 .card {
   background: #ffffff;
   border: 1px solid #d8e3f6;
   border-radius: 14px;
-  padding: 1rem;
+  padding: clamp(0.7rem, 1.4vw, 1.1rem);
   box-shadow: 0 10px 24px rgba(35, 67, 125, 0.08);
 }
 
 .actions {
   display: flex;
   gap: 0.75rem;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space);
   align-items: center;
   flex-wrap: wrap;
 }
@@ -66,15 +48,16 @@ h1 {
 
 .month-title {
   margin: 0;
-  min-width: 180px;
+  min-width: 140px;
   text-align: center;
+  font-size: clamp(1rem, 1.35vw, 1.35rem);
 }
 
 .account-list {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space);
 }
 
 .account-chip {
@@ -123,8 +106,8 @@ button {
   border-radius: 10px;
   background: #2f6fe7;
   color: #ffffff;
-  padding: 0.6rem 0.95rem;
-  font-size: 0.95rem;
+  padding: clamp(0.46rem, 0.9vw, 0.6rem) clamp(0.7rem, 1.2vw, 0.95rem);
+  font-size: clamp(0.78rem, 1vw, 0.95rem);
   cursor: pointer;
 }
 
@@ -146,8 +129,8 @@ button.secondary {
 .weekday-row {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0.4rem;
-  margin-bottom: 0.4rem;
+  gap: clamp(0.2rem, 0.45vw, 0.4rem);
+  margin-bottom: var(--space);
 }
 
 .weekday-cell {
@@ -159,13 +142,27 @@ button.secondary {
 .month-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 0.4rem;
+  gap: clamp(0.2rem, 0.45vw, 0.4rem);
+}
+
+.calendar-scroll {
+  width: 100%;
+  overflow: hidden;
+  padding-bottom: 0.2rem;
+}
+
+.calendar-scroll .weekday-row {
+  width: 100%;
+}
+
+.calendar-scroll .month-grid {
+  width: 100%;
 }
 
 .calendar-layout {
   display: grid;
-  grid-template-columns: minmax(0, 2.1fr) minmax(260px, 1fr);
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 32vw);
+  gap: clamp(0.7rem, 1.4vw, 1rem);
 }
 
 .calendar-pane {
@@ -175,10 +172,11 @@ button.secondary {
 .day-cell {
   border: 1px solid #e2ebfa;
   border-radius: 10px;
-  padding: 0.5rem;
-  min-height: 120px;
+  padding: clamp(0.3rem, 0.8vw, 0.5rem);
+  min-height: clamp(72px, 8.2vw, 128px);
   background: #f9fbff;
   cursor: pointer;
+  overflow: hidden;
 }
 
 .day-muted {
@@ -208,7 +206,7 @@ button.secondary {
 }
 
 .day-number {
-  font-size: 0.9rem;
+  font-size: clamp(0.72rem, 1.1vw, 0.92rem);
   font-weight: 700;
   margin-bottom: 0.3rem;
 }
@@ -218,25 +216,29 @@ button.secondary {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.25rem;
+  gap: clamp(0.1rem, 0.25vw, 0.2rem);
 }
 
 .day-event-item {
-  font-size: 0.8rem;
+  font-size: clamp(0.62rem, 0.85vw, 0.8rem);
   display: grid;
   gap: 0.1rem;
   border-left: 2px solid #2f6fe7;
-  padding-left: 0.35rem;
+  padding-left: clamp(0.2rem, 0.45vw, 0.35rem);
+  min-width: 0;
 }
 
 .event-time {
   color: #5b6b86;
-  font-size: 0.74rem;
+  font-size: clamp(0.58rem, 0.75vw, 0.72rem);
 }
 
 .day-event-item a {
   color: #275fce;
   text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .day-event-item a:hover {
@@ -249,13 +251,13 @@ button.secondary {
   color: #ab1d1d;
   padding: 0.6rem;
   border-radius: 8px;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space);
 }
 
 .day-detail {
   border: 1px solid #e1e9f8;
   border-radius: 10px;
-  padding: 0.8rem;
+  padding: clamp(0.55rem, 1vw, 0.8rem);
   background: #fbfdff;
   align-self: start;
 }
@@ -265,13 +267,13 @@ button.secondary {
 }
 
 .day-detail-actions {
-  margin-bottom: 0.7rem;
+  margin-bottom: var(--space);
 }
 
 .event-form {
   display: grid;
   gap: 0.55rem;
-  margin-bottom: 0.8rem;
+  margin-bottom: var(--space);
   border: 1px solid #e3ebfb;
   border-radius: 8px;
   padding: 0.65rem;
@@ -359,32 +361,43 @@ button.secondary {
     grid-template-columns: 1fr;
   }
 
-  .month-grid,
-  .weekday-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .month-actions {
+    align-items: stretch;
   }
 
-  .weekday-row {
-    display: none;
+  .month-title {
+    width: 100%;
+    text-align: left;
+    min-width: 0;
   }
 }
 
 @media (max-width: 640px) {
   #root {
-    padding: 1rem;
+    padding: 0.65rem;
   }
 
   .actions {
-    flex-direction: column;
-    align-items: stretch;
+    gap: 0.5rem;
   }
 
-  .month-title {
-    text-align: left;
+  .day-cell {
+    min-height: 66px;
+    padding: 0.28rem;
   }
 
-  .month-grid {
-    grid-template-columns: 1fr;
+  .weekday-cell {
+    font-size: 0.7rem;
+  }
+
+  .day-event-item {
+    font-size: 0.58rem;
+    padding-left: 0.25rem;
+    border-left-width: 1px;
+  }
+
+  .event-time {
+    font-size: 0.52rem;
   }
 
   .time-grid {
