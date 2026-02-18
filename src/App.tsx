@@ -55,6 +55,8 @@ type NewEventForm = {
   reminderMinutes: string;
 };
 
+type WeekStart = "sunday" | "monday";
+
 const ACCOUNT_COLORS = [
   "#2f6fe7",
   "#d94841",
@@ -128,11 +130,12 @@ function nextDayKey(dayKey: string): string {
   return toDayKey(date);
 }
 
-function buildMonthGrid(monthStart: Date): MonthCell[] {
+function buildMonthGrid(monthStart: Date, weekStart: WeekStart): MonthCell[] {
   const firstDay = new Date(monthStart);
   const startWeekday = firstDay.getDay();
+  const offset = weekStart === "monday" ? (startWeekday + 6) % 7 : startWeekday;
   const gridStart = new Date(firstDay);
-  gridStart.setDate(firstDay.getDate() - startWeekday);
+  gridStart.setDate(firstDay.getDate() - offset);
 
   return Array.from({ length: 42 }, (_, index) => {
     const date = new Date(gridStart);
@@ -142,6 +145,11 @@ function buildMonthGrid(monthStart: Date): MonthCell[] {
       inCurrentMonth: date.getMonth() === monthStart.getMonth(),
     };
   });
+}
+
+function getWeekdayLabels(weekStart: WeekStart): string[] {
+  const labels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return weekStart === "monday" ? [...labels.slice(1), labels[0]] : labels;
 }
 
 function normalizeAccount(session: GoogleSession): ConnectedAccount {
@@ -189,6 +197,10 @@ export default function App() {
   const [isRestoringSession, setIsRestoringSession] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentMonth, setCurrentMonth] = useState(getMonthStart(new Date()));
+  const [weekStart, setWeekStart] = useState<WeekStart>(() => {
+    const storedWeekStart = window.localStorage.getItem("calendarWeekStart");
+    return storedWeekStart === "monday" ? "monday" : "sunday";
+  });
   const [selectedDayKey, setSelectedDayKey] = useState(toDayKey(new Date()));
   const [showCreateEventForm, setShowCreateEventForm] = useState(false);
   const [isCreatingEvent, setIsCreatingEvent] = useState(false);
@@ -444,6 +456,10 @@ export default function App() {
     };
   }, [selectedEvent]);
 
+  useEffect(() => {
+    window.localStorage.setItem("calendarWeekStart", weekStart);
+  }, [weekStart]);
+
   const connectGoogleAccount = async () => {
     if (!clientId) {
       setError("Missing VITE_GOOGLE_CLIENT_ID in .env");
@@ -537,7 +553,8 @@ export default function App() {
     }
   };
 
-  const monthGrid = useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
+  const monthGrid = useMemo(() => buildMonthGrid(currentMonth, weekStart), [currentMonth, weekStart]);
+  const weekdayLabels = useMemo(() => getWeekdayLabels(weekStart), [weekStart]);
   const todayKey = useMemo(() => toDayKey(new Date()), []);
 
   const eventsByDay = useMemo(() => {
@@ -718,6 +735,16 @@ export default function App() {
             <button onClick={connectGoogleAccount} disabled={isAuthenticating}>
               {isAuthenticating ? "Connecting..." : "Add Account"}
             </button>
+            <label className="week-start-control">
+              Week starts
+              <select
+                value={weekStart}
+                onChange={(event) => setWeekStart(event.target.value as WeekStart)}
+              >
+                <option value="sunday">Sunday</option>
+                <option value="monday">Monday</option>
+              </select>
+            </label>
           </div>
 
           <div className="account-list">
@@ -756,7 +783,7 @@ export default function App() {
             <div className="calendar-pane">
               <div className="calendar-scroll">
                 <div className="weekday-row">
-                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
+                  {weekdayLabels.map((label) => (
                     <div key={label} className="weekday-cell">
                       {label}
                     </div>

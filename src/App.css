@@ -46,6 +46,22 @@ body {
   justify-content: flex-start;
 }
 
+.week-start-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.84rem;
+  color: #334862;
+}
+
+.week-start-control select {
+  border: 1px solid #ced9ec;
+  border-radius: 8px;
+  padding: 0.35rem 0.45rem;
+  background: #ffffff;
+  color: #152032;
+}
+
 .month-title {
   margin: 0;
   min-width: 140px;
