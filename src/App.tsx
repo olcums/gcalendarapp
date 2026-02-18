@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 type GoogleSession = {
@@ -193,6 +194,7 @@ export default function App() {
   const [isCreatingEvent, setIsCreatingEvent] = useState(false);
   const [deletingEventKey, setDeletingEventKey] = useState<string | null>(null);
   const [createEventError, setCreateEventError] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [notificationPermissionChecked, setNotificationPermissionChecked] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
   const [newEventForm, setNewEventForm] = useState<NewEventForm>({
@@ -425,6 +427,23 @@ export default function App() {
     };
   }, [events]);
 
+  useEffect(() => {
+    if (!selectedEvent) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedEvent(null);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [selectedEvent]);
+
   const connectGoogleAccount = async () => {
     if (!clientId) {
       setError("Missing VITE_GOOGLE_CLIENT_ID in .env");
@@ -471,6 +490,15 @@ export default function App() {
 
     setAccounts((prev) => prev.filter((account) => account.email !== email));
     setError(null);
+  };
+
+  const openExternalEventLink = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to open external link.";
+      setError(message);
+    }
   };
 
   const deleteEvent = async (eventToDelete: CalendarEvent) => {
@@ -765,13 +793,16 @@ export default function App() {
                               style={{ borderLeftColor: event.sourceColor }}
                             >
                               <span className="event-time">{formatEventTime(event)}</span>
-                              {event.htmlLink ? (
-                                <a href={event.htmlLink} target="_blank" rel="noreferrer">
-                                  {event.summary ?? "Untitled event"}
-                                </a>
-                              ) : (
-                                <span>{event.summary ?? "Untitled event"}</span>
-                              )}
+                              <button
+                                type="button"
+                                className="event-link"
+                                onClick={(clickEvent) => {
+                                  clickEvent.stopPropagation();
+                                  setSelectedEvent(event);
+                                }}
+                              >
+                                {event.summary ?? "Untitled event"}
+                              </button>
                             </li>
                           ))}
                         </ul>
@@ -936,6 +967,15 @@ export default function App() {
                       key={`${event.sourceEmail}:${event.id}`}
                       className="detail-event-item"
                       style={{ borderLeftColor: event.sourceColor }}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedEvent(event)}
+                      onKeyDown={(eventKeyDown) => {
+                        if (eventKeyDown.key === "Enter" || eventKeyDown.key === " ") {
+                          eventKeyDown.preventDefault();
+                          setSelectedEvent(event);
+                        }
+                      }}
                     >
                       <div className="detail-header">
                         <strong>{event.summary ?? "Untitled event"}</strong>
@@ -943,7 +983,10 @@ export default function App() {
                           type="button"
                           className="danger"
                           disabled={deletingEventKey === `${event.sourceEmail}:${event.id}`}
-                          onClick={() => void deleteEvent(event)}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation();
+                            void deleteEvent(event);
+                          }}
                         >
                           {deletingEventKey === `${event.sourceEmail}:${event.id}` ? "Deleting..." : "Delete"}
                         </button>
@@ -955,7 +998,16 @@ export default function App() {
                       </p>
                       {event.location ? <p>{event.location}</p> : null}
                       {event.htmlLink ? (
-                        <a href={event.htmlLink} target="_blank" rel="noreferrer">
+                        <a
+                          href={event.htmlLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(clickEvent) => {
+                            clickEvent.preventDefault();
+                            clickEvent.stopPropagation();
+                            void openExternalEventLink(event.htmlLink as string);
+                          }}
+                        >
                           Open in Google Calendar
                         </a>
                       ) : null}
@@ -967,6 +1019,53 @@ export default function App() {
           </div>
         </section>
       )}
+
+      {selectedEvent ? (
+        <div
+          className="event-modal-backdrop"
+          onClick={() => setSelectedEvent(null)}
+          role="presentation"
+        >
+          <section
+            className="event-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Event details"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3>{selectedEvent.summary ?? "Untitled event"}</h3>
+            <p>
+              <strong>Time:</strong> {formatEventTime(selectedEvent)}
+            </p>
+            <p>
+              <strong>Account:</strong> {selectedEvent.sourceEmail}
+            </p>
+            {selectedEvent.location ? (
+              <p>
+                <strong>Location:</strong> {selectedEvent.location}
+              </p>
+            ) : null}
+            {selectedEvent.htmlLink ? (
+              <p>
+                <a
+                  href={selectedEvent.htmlLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void openExternalEventLink(selectedEvent.htmlLink as string);
+                  }}
+                >
+                  Open in Google Calendar
+                </a>
+              </p>
+            ) : null}
+            <button type="button" className="secondary" onClick={() => setSelectedEvent(null)}>
+              Close
+            </button>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

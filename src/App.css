@@ -255,6 +255,22 @@ button.danger:hover {
   text-decoration: underline;
 }
 
+.event-link {
+  border: 0;
+  background: none;
+  color: #275fce;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0;
+  text-align: left;
+}
+
+.event-link:hover {
+  text-decoration: underline;
+}
+
 .error {
   border: 1px solid #f4b8b8;
   background: #fff1f1;
@@ -339,6 +355,7 @@ button.danger:hover {
   border-radius: 8px;
   padding: 0.6rem;
   background: #f9fbff;
+  cursor: pointer;
 }
 
 .detail-event-item strong {
@@ -371,6 +388,35 @@ button.danger:hover {
 
 .detail-event-item a:hover {
   text-decoration: underline;
+}
+
+.event-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 27, 46, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 1000;
+}
+
+.event-modal {
+  width: min(520px, 100%);
+  border: 1px solid #d8e3f6;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 14px 40px rgba(12, 28, 56, 0.24);
+  padding: 1rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.event-modal h3 {
+  margin: 0;
+}
+
+.event-modal p {
+  margin: 0;
 }
 
 @media (max-width: 900px) {
