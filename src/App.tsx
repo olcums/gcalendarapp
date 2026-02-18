@@ -58,6 +58,7 @@ type NewEventForm = {
 type WeekStart = "sunday" | "monday";
 const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const REMINDER_SOUND_URL = "/reminder.mp3";
+const HTTP_STATUS_UNAUTHORIZED = 401;
 
 const ACCOUNT_COLORS = [
   "#2f6fe7",
@@ -186,6 +187,11 @@ function getReminderMinutes(event: CalendarEvent): number | null {
   return 10;
 }
 
+async function parseGoogleErrorMessage(response: Response, fallback: string): Promise<string> {
+  const payload = await response.json().catch(() => null);
+  return payload?.error?.message ?? fallback;
+}
+
 export default function App() {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
   const clientSecret = import.meta.env.VITE_GOOGLE_CLIENT_SECRET;
@@ -223,6 +229,54 @@ export default function App() {
     reminderMinutes: "10",
   });
 
+  const refreshAccountAccessToken = useCallback(
+    async (email: string): Promise<string> => {
+      if (!clientId) {
+        throw new Error("Missing VITE_GOOGLE_CLIENT_ID in .env");
+      }
+
+      const refreshed = await invoke<GoogleSession>("refresh_google_session", {
+        clientId,
+        clientSecret: clientSecret || null,
+        email,
+      });
+
+      setAccounts((prev) =>
+        prev.map((account) =>
+          account.email === email
+            ? { ...account, accessToken: refreshed.access_token, color: colorForEmail(account.email) }
+            : account
+        )
+      );
+
+      return refreshed.access_token;
+    },
+    [clientId, clientSecret]
+  );
+
+  const fetchGoogleWithAutoRefresh = useCallback(
+    async (account: ConnectedAccount, input: string, init: RequestInit = {}): Promise<Response> => {
+      const buildInit = (accessToken: string): RequestInit => {
+        const headers = new Headers(init.headers);
+        headers.set("Authorization", `Bearer ${accessToken}`);
+        return {
+          ...init,
+          headers,
+        };
+      };
+
+      let response = await fetch(input, buildInit(account.accessToken));
+      if (response.status !== HTTP_STATUS_UNAUTHORIZED) {
+        return response;
+      }
+
+      const nextAccessToken = await refreshAccountAccessToken(account.email);
+      response = await fetch(input, buildInit(nextAccessToken));
+      return response;
+    },
+    [refreshAccountAccessToken]
+  );
+
   const fetchEvents = useCallback(async (accountsToLoad: ConnectedAccount[], monthStart: Date) => {
     if (accountsToLoad.length === 0) {
       setEvents([]);
@@ -245,18 +299,14 @@ export default function App() {
 
       const settled = await Promise.allSettled(
         accountsToLoad.map(async (account) => {
-          const response = await fetch(
+          const response = await fetchGoogleWithAutoRefresh(
+            account,
             `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`,
-            {
-              headers: {
-                Authorization: `Bearer ${account.accessToken}`,
-              },
-            }
+            {}
           );
 
           if (!response.ok) {
-            const payload = await response.json().catch(() => null);
-            const message = payload?.error?.message ?? "Failed to fetch events.";
+            const message = await parseGoogleErrorMessage(response, "Failed to fetch events.");
             throw new Error(`${account.email}: ${message}`);
           }
 
@@ -295,7 +345,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [fetchGoogleWithAutoRefresh]);
 
   useEffect(() => {
     if (!clientId) {
@@ -572,19 +622,16 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch(
+      const response = await fetchGoogleWithAutoRefresh(
+        account,
         `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventToDelete.id)}`,
         {
           method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${account.accessToken}`,
-          },
         }
       );
 
       if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        const message = payload?.error?.message ?? "Failed to delete calendar event.";
+        const message = await parseGoogleErrorMessage(response, "Failed to delete calendar event.");
         throw new Error(message);
       }
 
@@ -701,12 +748,12 @@ export default function App() {
         };
       }
 
-      const response = await fetch(
+      const response = await fetchGoogleWithAutoRefresh(
+        account,
         "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${account.accessToken}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(requestBody),
@@ -714,8 +761,7 @@ export default function App() {
       );
 
       if (!response.ok) {
-        const payload = await response.json().catch(() => null);
-        const message = payload?.error?.message ?? "Failed to create calendar event.";
+        const message = await parseGoogleErrorMessage(response, "Failed to create calendar event.");
         throw new Error(message);
       }
 

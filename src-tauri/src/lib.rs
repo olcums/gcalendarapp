@@ -160,6 +160,25 @@ fn clear_google_session(app: tauri::AppHandle, email: String) -> Result<(), Stri
     remove_saved_account(&app, &email)
 }
 
+#[tauri::command]
+fn refresh_google_session(
+    client_id: String,
+    client_secret: Option<String>,
+    email: String,
+) -> Result<GoogleSession, String> {
+    let refresh_token = load_refresh_token(&email)?;
+    let refreshed = exchange_refresh_token(&client_id, client_secret.as_deref(), &refresh_token)?;
+
+    if let Some(new_refresh_token) = refreshed.refresh_token.as_deref() {
+        let _ = save_refresh_token(&email, new_refresh_token);
+    }
+
+    Ok(GoogleSession {
+        email,
+        access_token: refreshed.access_token,
+    })
+}
+
 fn resolve_fixed_loopback_redirect(redirect_uri: &str) -> Result<(String, String), String> {
     let parsed = Url::parse(redirect_uri).map_err(|e| format!("Invalid redirect URI: {e}"))?;
     if parsed.scheme() != "http" {
@@ -491,7 +510,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             login_with_google,
             restore_google_sessions,
-            clear_google_session
+            clear_google_session,
+            refresh_google_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
