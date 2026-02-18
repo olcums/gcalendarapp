@@ -191,6 +191,7 @@ export default function App() {
   const [selectedDayKey, setSelectedDayKey] = useState(toDayKey(new Date()));
   const [showCreateEventForm, setShowCreateEventForm] = useState(false);
   const [isCreatingEvent, setIsCreatingEvent] = useState(false);
+  const [deletingEventKey, setDeletingEventKey] = useState<string | null>(null);
   const [createEventError, setCreateEventError] = useState<string | null>(null);
   const [notificationPermissionChecked, setNotificationPermissionChecked] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
@@ -470,6 +471,42 @@ export default function App() {
 
     setAccounts((prev) => prev.filter((account) => account.email !== email));
     setError(null);
+  };
+
+  const deleteEvent = async (eventToDelete: CalendarEvent) => {
+    const account = accounts.find((entry) => entry.email === eventToDelete.sourceEmail);
+    if (!account) {
+      setError(`No connected account found for ${eventToDelete.sourceEmail}.`);
+      return;
+    }
+
+    const eventKey = `${eventToDelete.sourceEmail}:${eventToDelete.id}`;
+    setDeletingEventKey(eventKey);
+    setError(null);
+
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventToDelete.id)}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${account.accessToken}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        const message = payload?.error?.message ?? "Failed to delete calendar event.";
+        throw new Error(message);
+      }
+
+      await fetchEvents(accounts, currentMonth);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete event.");
+    } finally {
+      setDeletingEventKey(null);
+    }
   };
 
   const monthGrid = useMemo(() => buildMonthGrid(currentMonth), [currentMonth]);
@@ -900,7 +937,17 @@ export default function App() {
                       className="detail-event-item"
                       style={{ borderLeftColor: event.sourceColor }}
                     >
-                      <strong>{event.summary ?? "Untitled event"}</strong>
+                      <div className="detail-header">
+                        <strong>{event.summary ?? "Untitled event"}</strong>
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={deletingEventKey === `${event.sourceEmail}:${event.id}`}
+                          onClick={() => void deleteEvent(event)}
+                        >
+                          {deletingEventKey === `${event.sourceEmail}:${event.id}` ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
                       <p>{formatEventTime(event)}</p>
                       <p className="detail-meta">
                         <span className="account-dot" style={{ backgroundColor: event.sourceColor }} />

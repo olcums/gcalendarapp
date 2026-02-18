@@ -16,13 +16,13 @@ body {
 
 #root {
   min-height: 100vh;
-  padding: clamp(0.45rem, 1vw, 0.85rem);
+  padding: 0.35rem;
 }
 
 .app-shell {
   width: 100%;
-  max-width: 1800px;
-  margin: 0 auto;
+  max-width: min(1800px, calc((100vh - 0.7rem) * 1.8));
+  margin: 0.45rem auto 0;
   padding-bottom: var(--space);
 }
 
@@ -124,6 +124,16 @@ button.secondary {
   border-color: #ced9ec;
   background: #ffffff;
   color: #213147;
+}
+
+button.danger {
+  border-color: #d94841;
+  background: #d94841;
+  color: #ffffff;
+}
+
+button.danger:hover {
+  background: #b63a34;
 }
 
 .weekday-row {
@@ -335,6 +345,13 @@ button.secondary {
   display: block;
 }
 
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .detail-event-item p {
   margin: 0.25rem 0;
 }
@@ -374,7 +391,7 @@ button.secondary {
 
 @media (max-width: 640px) {
   #root {
-    padding: 0.65rem;
+    padding: 0.35rem;
   }
 
   .actions {
