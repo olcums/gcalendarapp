@@ -56,6 +56,8 @@ type NewEventForm = {
 };
 
 type WeekStart = "sunday" | "monday";
+const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+const REMINDER_SOUND_URL = "/reminder.mp3";
 
 const ACCOUNT_COLORS = [
   "#2f6fe7",
@@ -209,6 +211,7 @@ export default function App() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [notificationPermissionChecked, setNotificationPermissionChecked] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
+  const reminderAudioRef = useRef<HTMLAudioElement | null>(null);
   const [newEventForm, setNewEventForm] = useState<NewEventForm>({
     summary: "",
     allDay: false,
@@ -346,6 +349,20 @@ export default function App() {
   }, [accounts, currentMonth, fetchEvents]);
 
   useEffect(() => {
+    if (accounts.length === 0 || isRestoringSession) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void fetchEvents(accounts, currentMonth);
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [accounts, currentMonth, fetchEvents, isRestoringSession]);
+
+  useEffect(() => {
     if (accounts.length === 0) {
       setActiveAccountEmail("");
       return;
@@ -386,9 +403,34 @@ export default function App() {
   }, [notificationPermissionChecked]);
 
   useEffect(() => {
+    const audio = new Audio(REMINDER_SOUND_URL);
+    audio.preload = "auto";
+    reminderAudioRef.current = audio;
+
+    return () => {
+      reminderAudioRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (events.length === 0) {
       return;
     }
+
+    const playReminderSound = async () => {
+      const audio = reminderAudioRef.current;
+      if (!audio) {
+        return;
+      }
+
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+        await audio.play();
+      } catch {
+        // Missing file or blocked playback should not interrupt reminders.
+      }
+    };
 
     const triggerDueNotifications = async () => {
       const nowMs = Date.now();
@@ -415,6 +457,7 @@ export default function App() {
         }
 
         notifiedReminderKeys.current.add(key);
+        await playReminderSound();
         try {
           const timeLabel = new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(
             new Date(event.start.dateTime)

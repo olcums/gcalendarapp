@@ -37,3 +37,8 @@ npm run tauri dev
 - Lets you create events to the selected account calendar.
 - Triggers local desktop notifications for upcoming timed events.
 - Stores refresh tokens securely in OS credential storage and restores sessions automatically on app startup.
+
+## Reminder sound
+
+- Put your MP3 file at `public/reminder.mp3`.
+- The app will play this sound whenever a reminder notification is triggered.
