@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
@@ -59,6 +60,14 @@ type WeekStart = "sunday" | "monday";
 const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const REMINDER_SOUND_URL = "/reminder.mp3";
 const HTTP_STATUS_UNAUTHORIZED = 401;
+const GOOGLE_AUTH_PROGRESS_EVENT = "google_auth_progress";
+
+type GoogleAuthProgressEvent = {
+  auth_id: string;
+  stage: "started" | "browser_opened" | "callback_received" | "succeeded" | "canceled" | "timeout" | "failed";
+  message?: string;
+  session?: GoogleSession;
+};
 
 const ACCOUNT_COLORS = [
   "#2f6fe7",
@@ -218,6 +227,8 @@ export default function App() {
   const [notificationPermissionChecked, setNotificationPermissionChecked] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
   const reminderAudioRef = useRef<HTMLAudioElement | null>(null);
+  const authFlowIdRef = useRef<string | null>(null);
+  const [authStatus, setAuthStatus] = useState<string | null>(null);
   const [newEventForm, setNewEventForm] = useState<NewEventForm>({
     summary: "",
     allDay: false,
@@ -553,6 +564,82 @@ export default function App() {
     window.localStorage.setItem("calendarWeekStart", weekStart);
   }, [weekStart]);
 
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+
+    const attachAuthProgressListener = async () => {
+      unlisten = await listen<GoogleAuthProgressEvent>(GOOGLE_AUTH_PROGRESS_EVENT, (event) => {
+        const payload = event.payload;
+        const currentAuthId = authFlowIdRef.current;
+        if (currentAuthId && payload.auth_id !== currentAuthId) {
+          return;
+        }
+
+        if (!currentAuthId) {
+          authFlowIdRef.current = payload.auth_id;
+        }
+
+        if (payload.stage === "started") {
+          setIsAuthenticating(true);
+          setAuthStatus("Waiting for browser...");
+          return;
+        }
+
+        if (payload.stage === "browser_opened") {
+          setAuthStatus("Browser opened. Complete Google sign-in.");
+          return;
+        }
+
+        if (payload.stage === "callback_received") {
+          setAuthStatus("Authorization received. Finishing sign-in...");
+          return;
+        }
+
+        if (payload.stage === "succeeded") {
+          if (payload.session) {
+            const normalized = normalizeAccount(payload.session);
+            setAccounts((prev) => {
+              const existing = prev.find((account) => account.email === normalized.email);
+              if (existing) {
+                return prev.map((account) =>
+                  account.email === normalized.email
+                    ? { ...account, accessToken: normalized.accessToken, color: normalized.color }
+                    : account
+                );
+              }
+              return [...prev, normalized];
+            });
+            setActiveAccountEmail(normalized.email);
+          }
+          setError(null);
+          setIsAuthenticating(false);
+          setAuthStatus(null);
+          authFlowIdRef.current = null;
+          return;
+        }
+
+        if (payload.stage === "canceled") {
+          setError(payload.message ?? "Google sign-in was canceled.");
+        } else if (payload.stage === "timeout") {
+          setError(payload.message ?? "Google sign-in timed out. Try again.");
+        } else {
+          setError(payload.message ?? "Google sign-in failed.");
+        }
+
+        setIsAuthenticating(false);
+        setAuthStatus(null);
+        authFlowIdRef.current = null;
+      });
+    };
+
+    void attachAuthProgressListener();
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
   const connectGoogleAccount = async () => {
     if (!clientId) {
       setError("Missing VITE_GOOGLE_CLIENT_ID in .env");
@@ -561,32 +648,41 @@ export default function App() {
 
     setIsAuthenticating(true);
     setError(null);
+    setAuthStatus("Starting Google sign-in...");
 
     try {
-      const session = await invoke<GoogleSession>("login_with_google", {
+      const flowId = await invoke<string>("start_google_auth", {
         clientId,
         clientSecret: clientSecret || null,
         redirectUri: redirectUri || null,
       });
-
-      const normalized = normalizeAccount(session);
-      setAccounts((prev) => {
-        const existing = prev.find((account) => account.email === normalized.email);
-        if (existing) {
-          return prev.map((account) =>
-            account.email === normalized.email
-              ? { ...account, accessToken: normalized.accessToken, color: normalized.color }
-              : account
-          );
-        }
-        return [...prev, normalized];
-      });
-      setActiveAccountEmail(normalized.email);
+      authFlowIdRef.current = flowId;
     } catch (err) {
       const message = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
       setError(message);
-    } finally {
       setIsAuthenticating(false);
+      setAuthStatus(null);
+      authFlowIdRef.current = null;
+    }
+  };
+
+  const cancelGoogleAccountConnect = async () => {
+    const currentFlowId = authFlowIdRef.current;
+    if (!currentFlowId) {
+      setIsAuthenticating(false);
+      setAuthStatus(null);
+      return;
+    }
+
+    setAuthStatus("Canceling Google sign-in...");
+    try {
+      await invoke("cancel_google_auth", { authId: currentFlowId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to cancel Google sign-in.";
+      setError(message);
+      setIsAuthenticating(false);
+      setAuthStatus(null);
+      authFlowIdRef.current = null;
     }
   };
 
@@ -645,7 +741,18 @@ export default function App() {
 
   const monthGrid = useMemo(() => buildMonthGrid(currentMonth, weekStart), [currentMonth, weekStart]);
   const weekdayLabels = useMemo(() => getWeekdayLabels(weekStart), [weekStart]);
-  const todayKey = useMemo(() => toDayKey(new Date()), []);
+  const [todayKey, setTodayKey] = useState(() => toDayKey(new Date()));
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const nextTodayKey = toDayKey(new Date());
+      setTodayKey((prevTodayKey) => (prevTodayKey === nextTodayKey ? prevTodayKey : nextTodayKey));
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const eventsByDay = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>();
@@ -793,9 +900,10 @@ export default function App() {
       ) : accounts.length === 0 ? (
         <section className="card">
           <p>Connect one or more Google accounts to load monthly view.</p>
-          <button onClick={connectGoogleAccount} disabled={isAuthenticating}>
-            {isAuthenticating ? "Waiting for Google sign-in..." : "Connect Google Account"}
+          <button onClick={isAuthenticating ? cancelGoogleAccountConnect : connectGoogleAccount}>
+            {isAuthenticating ? "Cancel Sign-In" : "Connect Google Account"}
           </button>
+          {isAuthenticating && authStatus ? <p>{authStatus}</p> : null}
           {error ? <p className="error">{error}</p> : null}
         </section>
       ) : (
@@ -821,9 +929,10 @@ export default function App() {
             <button onClick={() => void fetchEvents(accounts, currentMonth)} disabled={isLoading}>
               {isLoading ? "Syncing..." : "Sync"}
             </button>
-            <button onClick={connectGoogleAccount} disabled={isAuthenticating}>
-              {isAuthenticating ? "Connecting..." : "Add Account"}
+            <button onClick={isAuthenticating ? cancelGoogleAccountConnect : connectGoogleAccount}>
+              {isAuthenticating ? "Cancel Sign-In" : "Add Account"}
             </button>
+            {isAuthenticating && authStatus ? <span>{authStatus}</span> : null}
             <label className="week-start-control">
               Week starts
               <select

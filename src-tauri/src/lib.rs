@@ -5,17 +5,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use url::Url;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct GoogleSession {
     email: String,
     access_token: String,
@@ -38,6 +41,27 @@ struct GoogleUserInfo {
     email: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct OAuthHelperRequest {
+    client_id: String,
+    client_secret: Option<String>,
+    redirect_uri: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OAuthHelperSession {
+    email: String,
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OAuthHelperResponse {
+    ok: bool,
+    session: Option<OAuthHelperSession>,
+    error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Default)]
 struct SavedAccounts {
     accounts: Vec<String>,
@@ -45,22 +69,208 @@ struct SavedAccounts {
 
 const KEYRING_SERVICE: &str = "gcalendarwin";
 const ACCOUNTS_FILE: &str = "google_accounts.json";
+const GOOGLE_AUTH_PROGRESS_EVENT: &str = "google_auth_progress";
+static AUTH_CANCEL_FLAGS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+#[derive(Clone, Serialize)]
+struct GoogleAuthProgressPayload {
+    auth_id: String,
+    stage: String,
+    message: Option<String>,
+    session: Option<GoogleSession>,
+}
+
+fn auth_cancel_flags() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    AUTH_CANCEL_FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn emit_google_auth_progress(
+    app: &tauri::AppHandle,
+    auth_id: &str,
+    stage: &str,
+    message: Option<String>,
+    session: Option<GoogleSession>,
+) {
+    let payload = GoogleAuthProgressPayload {
+        auth_id: auth_id.to_string(),
+        stage: stage.to_string(),
+        message,
+        session,
+    };
+    let _ = app.emit(GOOGLE_AUTH_PROGRESS_EVENT, payload);
+}
 
 #[tauri::command]
-fn login_with_google(
+fn start_google_auth(
     app: tauri::AppHandle,
     client_id: String,
     client_secret: Option<String>,
     redirect_uri: Option<String>,
-) -> Result<GoogleSession, String> {
+) -> Result<String, String> {
+    if client_id.trim().is_empty() {
+        return Err("Missing VITE_GOOGLE_CLIENT_ID in .env".to_string());
+    }
+
+    let auth_id = random_urlsafe(12);
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut map = auth_cancel_flags()
+            .lock()
+            .map_err(|_| "Failed to acquire auth cancel lock.".to_string())?;
+        map.insert(auth_id.clone(), Arc::clone(&cancel_flag));
+    }
+
+    emit_google_auth_progress(&app, &auth_id, "started", None, None);
+
+    let app_for_thread = app.clone();
+    let auth_id_for_thread = auth_id.clone();
+    thread::spawn(move || {
+        let request = OAuthHelperRequest {
+            client_id,
+            client_secret,
+            redirect_uri,
+        };
+
+        let result = run_oauth_helper(&request, cancel_flag.as_ref(), |stage| {
+            emit_google_auth_progress(&app_for_thread, &auth_id_for_thread, stage, None, None);
+        });
+
+        match result {
+            Ok(session) => {
+                let save_result = if let Some(refresh_token) = session.refresh_token.as_deref() {
+                    save_refresh_token(&session.email, refresh_token)
+                        .and_then(|_| upsert_saved_account(&app_for_thread, &session.email))
+                } else {
+                    Ok(())
+                };
+
+                if let Err(error) = save_result {
+                    emit_google_auth_progress(
+                        &app_for_thread,
+                        &auth_id_for_thread,
+                        "failed",
+                        Some(error),
+                        None,
+                    );
+                } else {
+                    emit_google_auth_progress(
+                        &app_for_thread,
+                        &auth_id_for_thread,
+                        "succeeded",
+                        None,
+                        Some(GoogleSession {
+                            email: session.email,
+                            access_token: session.access_token,
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let stage = if error.contains("timed out") {
+                    "timeout"
+                } else if error.contains("canceled") || error.contains("access_denied") {
+                    "canceled"
+                } else {
+                    "failed"
+                };
+                emit_google_auth_progress(
+                    &app_for_thread,
+                    &auth_id_for_thread,
+                    stage,
+                    Some(error),
+                    None,
+                );
+            }
+        }
+
+        if let Ok(mut map) = auth_cancel_flags().lock() {
+            map.remove(&auth_id_for_thread);
+        }
+    });
+
+    Ok(auth_id)
+}
+
+#[tauri::command]
+fn cancel_google_auth(auth_id: String) -> Result<(), String> {
+    let map = auth_cancel_flags()
+        .lock()
+        .map_err(|_| "Failed to acquire auth cancel lock.".to_string())?;
+    if let Some(flag) = map.get(&auth_id) {
+        flag.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+pub fn run_oauth_helper_if_requested() -> bool {
+    let mut args = std::env::args();
+    let _ = args.next();
+    if args.next().as_deref() != Some("--oauth-helper") {
+        return false;
+    }
+
+    let exit_code = match run_oauth_helper_stdio() {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("{error}");
+            1
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+fn run_oauth_helper_stdio() -> Result<(), String> {
+    let mut raw_request = String::new();
+    std::io::stdin()
+        .read_to_string(&mut raw_request)
+        .map_err(|e| format!("Failed to read helper request payload: {e}"))?;
+
+    let helper_request = serde_json::from_str::<OAuthHelperRequest>(raw_request.trim())
+        .map_err(|e| format!("Invalid helper request payload: {e}"))?;
+
+    let helper_response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let canceled = AtomicBool::new(false);
+        run_oauth_helper(&helper_request, &canceled, |_| {})
+    })) {
+        Ok(Ok(session)) => OAuthHelperResponse {
+            ok: true,
+            session: Some(session),
+            error: None,
+        },
+        Ok(Err(error)) => OAuthHelperResponse {
+            ok: false,
+            session: None,
+            error: Some(error),
+        },
+        Err(_) => OAuthHelperResponse {
+            ok: false,
+            session: None,
+            error: Some("Authentication helper crashed unexpectedly.".to_string()),
+        },
+    };
+
+    let response_json = serde_json::to_string(&helper_response)
+        .map_err(|e| format!("Failed to serialize helper response payload: {e}"))?;
+    println!("{response_json}");
+    Ok(())
+}
+
+fn run_oauth_helper<F>(
+    request: &OAuthHelperRequest,
+    canceled: &AtomicBool,
+    mut on_progress: F,
+) -> Result<OAuthHelperSession, String>
+where
+    F: FnMut(&str),
+{
     const SCOPE: &str = "openid email https://www.googleapis.com/auth/calendar";
 
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);
     let code_challenge = pkce_challenge(&code_verifier);
 
-    let (listener_addr, final_redirect_uri) = match redirect_uri {
-        Some(uri) => resolve_fixed_loopback_redirect(&uri)?,
+    let (listener_addr, final_redirect_uri) = match request.redirect_uri.as_deref() {
+        Some(uri) => resolve_fixed_loopback_redirect(uri)?,
         None => {
             let temp_listener = TcpListener::bind("127.0.0.1:0")
                 .map_err(|e| format!("Cannot bind callback port: {e}"))?;
@@ -83,7 +293,7 @@ fn login_with_google(
         "https://accounts.google.com/o/oauth2/v2/auth",
         &[
             ("response_type", "code"),
-            ("client_id", client_id.as_str()),
+            ("client_id", request.client_id.as_str()),
             ("redirect_uri", final_redirect_uri.as_str()),
             ("scope", SCOPE),
             ("state", state.as_str()),
@@ -97,11 +307,13 @@ fn login_with_google(
 
     tauri_plugin_opener::open_url(auth_url.as_str(), None::<String>)
         .map_err(|e| format!("Failed to open browser: {e}"))?;
+    on_progress("browser_opened");
 
-    let code = wait_for_auth_code(listener, &state, Duration::from_secs(180))?;
+    let code = wait_for_auth_code(listener, &state, Duration::from_secs(180), canceled)?;
+    on_progress("callback_received");
     let token = exchange_auth_code(
-        &client_id,
-        client_secret.as_deref(),
+        &request.client_id,
+        request.client_secret.as_deref(),
         &code_verifier,
         &code,
         &final_redirect_uri,
@@ -109,15 +321,137 @@ fn login_with_google(
 
     let email = fetch_user_email(&token.access_token)?;
 
-    if let Some(refresh_token) = token.refresh_token.as_deref() {
-        save_refresh_token(&email, refresh_token)?;
-        upsert_saved_account(&app, &email)?;
+    Ok(OAuthHelperSession {
+        email,
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+    })
+}
+
+#[tauri::command]
+fn login_with_google(
+    app: tauri::AppHandle,
+    client_id: String,
+    client_secret: Option<String>,
+    redirect_uri: Option<String>,
+) -> Result<GoogleSession, String> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        login_with_google_inner(
+            &app,
+            &client_id,
+            client_secret.as_deref(),
+            redirect_uri.as_deref(),
+        )
+    }));
+
+    match result {
+        Ok(outcome) => outcome,
+        Err(_) => Err("Google sign-in failed unexpectedly. Please try again.".to_string()),
+    }
+}
+
+fn login_with_google_inner(
+    app: &tauri::AppHandle,
+    client_id: &str,
+    client_secret: Option<&str>,
+    redirect_uri: Option<&str>,
+) -> Result<GoogleSession, String> {
+    let helper_output = run_oauth_helper_process(client_id, client_secret, redirect_uri)?;
+
+    if let Some(refresh_token) = helper_output.refresh_token.as_deref() {
+        save_refresh_token(&helper_output.email, refresh_token)?;
+        upsert_saved_account(app, &helper_output.email)?;
     }
 
     Ok(GoogleSession {
-        email,
-        access_token: token.access_token,
+        email: helper_output.email,
+        access_token: helper_output.access_token,
     })
+}
+
+fn run_oauth_helper_process(
+    client_id: &str,
+    client_secret: Option<&str>,
+    redirect_uri: Option<&str>,
+) -> Result<OAuthHelperSession, String> {
+    let helper_request = OAuthHelperRequest {
+        client_id: client_id.to_string(),
+        client_secret: client_secret.map(|value| value.to_string()),
+        redirect_uri: redirect_uri.map(|value| value.to_string()),
+    };
+
+    let request_json = serde_json::to_string(&helper_request)
+        .map_err(|e| format!("Failed to serialize auth helper payload: {e}"))?;
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("Failed to resolve current executable: {e}"))?;
+
+    let mut child = Command::new(current_exe)
+        .arg("--oauth-helper")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start authentication helper process: {e}"))?;
+
+    {
+        let Some(mut stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            return Err("Authentication helper stdin was not available.".to_string());
+        };
+        stdin
+            .write_all(request_json.as_bytes())
+            .map_err(|e| format!("Failed to send auth payload to helper process: {e}"))?;
+    }
+
+    let timeout = Duration::from_secs(210);
+    let started_at = Instant::now();
+    loop {
+        if started_at.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Google sign-in timed out. Please try again.".to_string());
+        }
+
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => thread::sleep(Duration::from_millis(120)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Failed while waiting for authentication helper: {e}"));
+            }
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to read authentication helper output: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_msg = stderr.trim();
+        if stderr_msg.is_empty() {
+            return Err("Authentication helper process exited unexpectedly.".to_string());
+        }
+        return Err(format!(
+            "Authentication helper process failed: {stderr_msg}"
+        ));
+    }
+
+    let response_text = String::from_utf8(output.stdout)
+        .map_err(|e| format!("Authentication helper returned invalid UTF-8: {e}"))?;
+    let helper_response = serde_json::from_str::<OAuthHelperResponse>(response_text.trim())
+        .map_err(|e| format!("Failed to parse authentication helper response: {e}"))?;
+
+    if helper_response.ok {
+        return helper_response
+            .session
+            .ok_or_else(|| "Authentication helper returned success without session data.".to_string());
+    }
+
+    Err(helper_response
+        .error
+        .unwrap_or_else(|| "Authentication helper failed without details.".to_string()))
 }
 
 #[tauri::command]
@@ -218,53 +552,74 @@ fn wait_for_auth_code(
     listener: TcpListener,
     expected_state: &str,
     timeout: Duration,
+    canceled: &AtomicBool,
 ) -> Result<String, String> {
     let started_at = Instant::now();
     loop {
+        if canceled.load(Ordering::SeqCst) {
+            return Err("Google sign-in was canceled.".to_string());
+        }
+
         match listener.accept() {
             Ok((mut stream, _)) => {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                 let mut first_line = String::new();
                 {
                     let mut reader = BufReader::new(&mut stream);
-                    reader
-                        .read_line(&mut first_line)
-                        .map_err(|e| format!("Failed to read callback request: {e}"))?;
+                    match reader.read_line(&mut first_line) {
+                        Ok(0) => continue,
+                        Ok(_) => {}
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::TimedOut
+                                || e.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            continue;
+                        }
+                        Err(_) => continue,
+                    }
                 }
 
-                let path = first_line
-                    .split_whitespace()
-                    .nth(1)
-                    .ok_or_else(|| "Invalid callback request received.".to_string())?;
+                if first_line.trim().is_empty() {
+                    continue;
+                }
 
-                let callback_url = Url::parse(&format!("http://127.0.0.1{path}"))
-                    .map_err(|e| format!("Invalid callback URL: {e}"))?;
+                let Some(path) = first_line.split_whitespace().nth(1) else {
+                    continue;
+                };
+
+                let callback_url = match Url::parse(&format!("http://127.0.0.1{path}")) {
+                    Ok(url) => url,
+                    Err(_) => continue,
+                };
                 let params: HashMap<String, String> =
                     callback_url.query_pairs().into_owned().collect();
 
                 let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body><h3>Authentication completed. You can close this window.</h3></body></html>";
-                stream
-                    .write_all(response.as_bytes())
-                    .map_err(|e| format!("Failed to write callback response: {e}"))?;
+                let _ = stream.write_all(response.as_bytes());
 
                 if let Some(error) = params.get("error") {
                     return Err(format!("Google returned an OAuth error: {error}"));
                 }
 
-                let returned_state = params
-                    .get("state")
-                    .ok_or_else(|| "Missing OAuth state in callback.".to_string())?;
+                let Some(returned_state) = params.get("state") else {
+                    continue;
+                };
                 if returned_state != expected_state {
-                    return Err("OAuth state mismatch. Authentication aborted.".to_string());
+                    continue;
                 }
 
-                let code = params
-                    .get("code")
-                    .ok_or_else(|| "Missing authorization code in callback.".to_string())?;
+                let Some(code) = params.get("code") else {
+                    continue;
+                };
                 return Ok(code.to_string());
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if canceled.load(Ordering::SeqCst) {
+                    return Err("Google sign-in was canceled.".to_string());
+                }
                 if started_at.elapsed() > timeout {
-                    return Err("Google sign-in timed out. Try again.".to_string());
+                    return Err("Google sign-in was canceled or timed out. Try again.".to_string());
                 }
                 thread::sleep(Duration::from_millis(120));
             }
@@ -508,6 +863,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            start_google_auth,
+            cancel_google_auth,
             login_with_google,
             restore_google_sessions,
             clear_google_session,
