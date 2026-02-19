@@ -19,10 +19,19 @@ type ConnectedAccount = {
 type CalendarEvent = {
   id: string;
   summary?: string;
+  description?: string;
   location?: string;
   htmlLink?: string;
+  hangoutLink?: string;
   sourceEmail: string;
   sourceColor: string;
+  conferenceData?: {
+    entryPoints?: Array<{
+      uri?: string;
+      entryPointType?: string;
+      label?: string;
+    }>;
+  };
   start?: {
     date?: string;
     dateTime?: string;
@@ -61,6 +70,9 @@ const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const REMINDER_SOUND_URL = "/reminder.mp3";
 const HTTP_STATUS_UNAUTHORIZED = 401;
 const GOOGLE_AUTH_PROGRESS_EVENT = "google_auth_progress";
+const ACCOUNT_COLOR_OVERRIDES_KEY = "calendarAccountColorOverrides";
+
+type AccountColorOverrides = Record<string, string>;
 
 type GoogleAuthProgressEvent = {
   auth_id: string;
@@ -70,14 +82,18 @@ type GoogleAuthProgressEvent = {
 };
 
 const ACCOUNT_COLORS = [
-  "#2f6fe7",
-  "#d94841",
-  "#2a9d8f",
-  "#f59e0b",
-  "#7c3aed",
-  "#0f766e",
-  "#ef4444",
-  "#1d4ed8",
+  "#2563eb",
+  "#dc2626",
+  "#16a34a",
+  "#ca8a04",
+  "#9333ea",
+  "#0d9488",
+  "#ea580c",
+  "#db2777",
+  "#4f46e5",
+  "#0891b2",
+  "#65a30d",
+  "#b91c1c",
 ];
 
 function colorForEmail(email: string): string {
@@ -86,6 +102,37 @@ function colorForEmail(email: string): string {
     hash = (hash * 31 + email.charCodeAt(i)) % 2147483647;
   }
   return ACCOUNT_COLORS[Math.abs(hash) % ACCOUNT_COLORS.length];
+}
+
+function sanitizeHexColor(value: string): string | null {
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : null;
+}
+
+function loadAccountColorOverrides(): AccountColorOverrides {
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_COLOR_OVERRIDES_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const normalized: AccountColorOverrides = {};
+    for (const [email, color] of Object.entries(parsed)) {
+      if (typeof color !== "string") {
+        continue;
+      }
+      const safeColor = sanitizeHexColor(color);
+      if (safeColor) {
+        normalized[email] = safeColor;
+      }
+    }
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+function resolveAccountColor(email: string, overrides: AccountColorOverrides): string {
+  return overrides[email] ?? colorForEmail(email);
 }
 
 function getMonthStart(date: Date): Date {
@@ -164,11 +211,11 @@ function getWeekdayLabels(weekStart: WeekStart): string[] {
   return weekStart === "monday" ? [...labels.slice(1), labels[0]] : labels;
 }
 
-function normalizeAccount(session: GoogleSession): ConnectedAccount {
+function normalizeAccount(session: GoogleSession, overrides: AccountColorOverrides): ConnectedAccount {
   return {
     email: session.email,
     accessToken: session.access_token,
-    color: colorForEmail(session.email),
+    color: resolveAccountColor(session.email, overrides),
   };
 }
 
@@ -194,6 +241,42 @@ function getReminderMinutes(event: CalendarEvent): number | null {
   }
 
   return 10;
+}
+
+function extractJoinLinks(event: CalendarEvent): string[] {
+  const links = new Set<string>();
+
+  const addIfJoinLink = (candidate?: string) => {
+    if (!candidate) {
+      return;
+    }
+    const value = candidate.trim();
+    if (!value) {
+      return;
+    }
+    if (value.includes("meet.google.com") || value.includes("teams.microsoft.com")) {
+      links.add(value);
+    }
+  };
+
+  addIfJoinLink(event.hangoutLink);
+  for (const entry of event.conferenceData?.entryPoints ?? []) {
+    addIfJoinLink(entry.uri);
+  }
+
+  const urlPattern = /https?:\/\/[^\s<>"')]+/g;
+  const textSources = [event.location, event.description];
+  for (const source of textSources) {
+    if (!source) {
+      continue;
+    }
+    const matches = source.match(urlPattern) ?? [];
+    for (const match of matches) {
+      addIfJoinLink(match);
+    }
+  }
+
+  return Array.from(links);
 }
 
 async function parseGoogleErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -227,6 +310,10 @@ export default function App() {
   const [notificationPermissionChecked, setNotificationPermissionChecked] = useState(false);
   const notifiedReminderKeys = useRef<Set<string>>(new Set());
   const reminderAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [accountColorOverrides, setAccountColorOverrides] = useState<AccountColorOverrides>(
+    () => loadAccountColorOverrides()
+  );
+  const accountColorOverridesRef = useRef<AccountColorOverrides>(accountColorOverrides);
   const authFlowIdRef = useRef<string | null>(null);
   const [authStatus, setAuthStatus] = useState<string | null>(null);
   const [newEventForm, setNewEventForm] = useState<NewEventForm>({
@@ -255,7 +342,11 @@ export default function App() {
       setAccounts((prev) =>
         prev.map((account) =>
           account.email === email
-            ? { ...account, accessToken: refreshed.access_token, color: colorForEmail(account.email) }
+            ? {
+                ...account,
+                accessToken: refreshed.access_token,
+                color: resolveAccountColor(account.email, accountColorOverridesRef.current),
+              }
             : account
         )
       );
@@ -376,7 +467,7 @@ export default function App() {
           return;
         }
 
-        const normalized = restored.map(normalizeAccount);
+        const normalized = restored.map((session) => normalizeAccount(session, accountColorOverridesRef.current));
         setAccounts(normalized);
         if (normalized.length > 0) {
           setActiveAccountEmail(normalized[0].email);
@@ -565,6 +656,25 @@ export default function App() {
   }, [weekStart]);
 
   useEffect(() => {
+    accountColorOverridesRef.current = accountColorOverrides;
+    window.localStorage.setItem(ACCOUNT_COLOR_OVERRIDES_KEY, JSON.stringify(accountColorOverrides));
+
+    setAccounts((prev) =>
+      prev.map((account) => {
+        const nextColor = resolveAccountColor(account.email, accountColorOverrides);
+        return account.color === nextColor ? account : { ...account, color: nextColor };
+      })
+    );
+
+    setEvents((prev) =>
+      prev.map((event) => {
+        const nextColor = resolveAccountColor(event.sourceEmail, accountColorOverrides);
+        return event.sourceColor === nextColor ? event : { ...event, sourceColor: nextColor };
+      })
+    );
+  }, [accountColorOverrides]);
+
+  useEffect(() => {
     let unlisten: UnlistenFn | null = null;
 
     const attachAuthProgressListener = async () => {
@@ -597,7 +707,7 @@ export default function App() {
 
         if (payload.stage === "succeeded") {
           if (payload.session) {
-            const normalized = normalizeAccount(payload.session);
+            const normalized = normalizeAccount(payload.session, accountColorOverridesRef.current);
             setAccounts((prev) => {
               const existing = prev.find((account) => account.email === normalized.email);
               if (existing) {
@@ -686,6 +796,18 @@ export default function App() {
     }
   };
 
+  const changeAccountColor = (email: string, color: string) => {
+    const safeColor = sanitizeHexColor(color);
+    if (!safeColor) {
+      return;
+    }
+
+    setAccountColorOverrides((prev) => ({
+      ...prev,
+      [email]: safeColor,
+    }));
+  };
+
   const disconnectAccount = async (email: string) => {
     try {
       await invoke("clear_google_session", { email });
@@ -694,6 +816,14 @@ export default function App() {
     }
 
     setAccounts((prev) => prev.filter((account) => account.email !== email));
+    setAccountColorOverrides((prev) => {
+      if (!(email in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[email];
+      return next;
+    });
     setError(null);
   };
 
@@ -962,6 +1092,16 @@ export default function App() {
               >
                 <span className="account-dot" style={{ backgroundColor: account.color }} />
                 <span className="account-email">{account.email}</span>
+                <input
+                  type="color"
+                  className="account-color-input"
+                  value={account.color}
+                  aria-label={`Change calendar color for ${account.email}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onChange={(event) => changeAccountColor(account.email, event.target.value)}
+                />
                 <button
                   className="chip-remove"
                   onClick={(event) => {
@@ -1258,6 +1398,10 @@ export default function App() {
             aria-label="Event details"
             onClick={(event) => event.stopPropagation()}
           >
+            {(() => {
+              const joinLinks = extractJoinLinks(selectedEvent);
+              return (
+                <>
             <h3>{selectedEvent.summary ?? "Untitled event"}</h3>
             <p>
               <strong>Time:</strong> {formatEventTime(selectedEvent)}
@@ -1268,6 +1412,27 @@ export default function App() {
             {selectedEvent.location ? (
               <p>
                 <strong>Location:</strong> {selectedEvent.location}
+              </p>
+            ) : null}
+            {joinLinks.length > 0 ? (
+              <p>
+                <strong>Join:</strong>{" "}
+                {joinLinks.map((link, index) => (
+                  <span key={link}>
+                    {index > 0 ? " | " : ""}
+                    <a
+                      href={link}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        void openExternalEventLink(link);
+                      }}
+                    >
+                      {link.includes("teams.microsoft.com") ? "Join Teams" : "Join Meet"}
+                    </a>
+                  </span>
+                ))}
               </p>
             ) : null}
             {selectedEvent.htmlLink ? (
@@ -1288,6 +1453,9 @@ export default function App() {
             <button type="button" className="secondary" onClick={() => setSelectedEvent(null)}>
               Close
             </button>
+                </>
+              );
+            })()}
           </section>
         </div>
       ) : null}

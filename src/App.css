@@ -104,6 +104,25 @@ body {
   font-size: 0.84rem;
 }
 
+.account-color-input {
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid #d6dfef;
+  border-radius: 999px;
+  padding: 0.08rem;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.account-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.account-color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 999px;
+}
+
 .chip-remove {
   border: 1px solid #d6dfef;
   background: #ffffff;
@@ -114,7 +133,8 @@ body {
 }
 
 .chip-remove:hover {
-  background: #eff4fd;
+  background: #245ed0;
+  color: #ffffff;
 }
 
 button {
@@ -129,6 +149,7 @@ button {
 
 button:hover {
   background: #245ed0;
+  color: #ffffff;
 }
 
 button:disabled {
@@ -268,6 +289,10 @@ button.danger:hover {
 }
 
 .day-event-item a:hover {
+  color: #ffffff;
+  background: #245ed0;
+  border-radius: 4px;
+  padding: 0 0.2rem;
   text-decoration: underline;
 }
 
@@ -284,6 +309,10 @@ button.danger:hover {
 }
 
 .event-link:hover {
+  color: #ffffff;
+  background: #245ed0;
+  border-radius: 4px;
+  padding: 0 0.2rem;
   text-decoration: underline;
 }
 
@@ -403,6 +432,10 @@ button.danger:hover {
 }
 
 .detail-event-item a:hover {
+  color: #ffffff;
+  background: #245ed0;
+  border-radius: 4px;
+  padding: 0 0.2rem;
   text-decoration: underline;
 }
 
